@@ -1,0 +1,20 @@
+import shell from "shelljs";
+import fs from "fs";
+import { executeCommand } from "../utils/command";
+
+export async function initAndClone(workDir: string): Promise<void> {
+  console.log("Step 1-4: Init and Clone Repository");
+  if (fs.existsSync(workDir)) {
+    shell.rm("-rf", workDir);
+  }
+  shell.mkdir("-p", workDir);
+
+  console.log("Cloning https://github.com/thrico/thrico-mobile branch check...");
+
+  await executeCommand(
+    "git",
+    ["clone", "--depth", "1", "-b", "check", "https://github.com/thrico/thrico-mobile", workDir],
+    process.cwd(),
+    "GIT CLONE"
+  );
+}
