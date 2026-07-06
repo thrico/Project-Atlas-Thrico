@@ -1,8 +1,9 @@
 import fs from "fs";
 import path from "path";
 import { MobilePublishPayload } from "../types";
-import { BrandingEngine } from "../utils/brandingEngine";
+
 import { AssetGenerator } from "../utils/assetGenerator";
+import { BrandingEngine } from "../utils/brandingEngine";
 
 export async function downloadAssets(
   workDir: string,
@@ -21,14 +22,17 @@ export async function downloadAssets(
       const logoPath = path.join(workDir, "logo.png");
       fs.writeFileSync(logoPath, Buffer.from(buffer));
       console.log(`Saved icon to ${logoPath}`);
-      
+
       // Also download splash if present
       if (payload.branding.splash) {
         console.log(`Downloading splash from ${payload.branding.splash}`);
         const splashRes = await fetch(payload.branding.splash);
         if (splashRes.ok) {
           const splashBuffer = await splashRes.arrayBuffer();
-          fs.writeFileSync(path.join(workDir, "splash.png"), Buffer.from(splashBuffer));
+          fs.writeFileSync(
+            path.join(workDir, "splash.png"),
+            Buffer.from(splashBuffer),
+          );
           console.log(`Saved splash to splash.png`);
         }
       }

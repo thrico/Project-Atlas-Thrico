@@ -13,7 +13,7 @@ export async function installDependencies(workDir: string): Promise<void> {
     fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
   }
 
-  await executeCommand("npx", ["yarn", "install", "--ignore-scripts", "--ignore-engines"], workDir, "YARN INSTALL");
+  await executeCommand("npx", ["yarn", "install", "--ignore-scripts", "--ignore-engines", "--mutex", "network"], workDir, "YARN INSTALL");
   
   console.log("Applying patches...");
   await executeCommand("npx", ["patch-package"], workDir, "PATCH-PACKAGE");

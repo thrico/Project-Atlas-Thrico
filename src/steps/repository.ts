@@ -5,7 +5,7 @@ import { executeCommand } from "../utils/command";
 export async function initAndClone(workDir: string): Promise<void> {
   console.log("Step 1-4: Init and Clone Repository");
   if (fs.existsSync(workDir)) {
-    shell.rm("-rf", workDir);
+    fs.rmSync(workDir, { recursive: true, force: true });
   }
   shell.mkdir("-p", workDir);
 

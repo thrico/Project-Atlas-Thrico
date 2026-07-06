@@ -52,16 +52,16 @@ export class BuildPipeline {
       await runStep("Install Dependencies", () => installDependencies(this.workDir));
 
       if (this.platform === "android" || this.platform === "both") {
-        await runStep("Build Android", () => buildAndroid(this.workDir));
+        await runStep("Build Android", () => buildAndroid(this.workDir, this.payload));
       }
 
       if (this.platform === "ios" || this.platform === "both") {
-        await runStep("Build iOS", () => buildIOS(this.workDir));
+        await runStep("Build iOS", () => buildIOS(this.workDir, this.payload));
       }
 
       await runStep("Upload Artifacts", () => uploadArtifacts(this.workDir, this.buildId));
       
-      // await runStep("Cleanup Build", () => cleanupBuild(this.workDir)); // Left commented out so you can inspect the folder
+      await runStep("Cleanup Build", () => cleanupBuild(this.workDir));
 
       console.log(`Build pipeline ${this.buildId} completed successfully!`);
     } catch (error) {

@@ -17,6 +17,15 @@ export async function uploadArtifacts(workDir: string, buildId: string): Promise
     console.warn("Could not find generated APK at", apkPath);
   }
 
+  // The AAB is typically output to this location after bundleRelease
+  const aabPath = path.join(workDir, "android", "app", "build", "outputs", "bundle", "release", "app-release.aab");
+  if (fs.existsSync(aabPath)) {
+    shell.cp(aabPath, artifactsDir);
+    console.log(`Copied AAB to ${artifactsDir}`);
+  } else {
+    console.warn("Could not find generated AAB at", aabPath);
+  }
+
   if (fs.existsSync(path.join(workDir, "Application.ipa"))) {
     shell.cp(path.join(workDir, "Application.ipa"), artifactsDir);
     console.log(`Copied IPA to ${artifactsDir}`);

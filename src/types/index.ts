@@ -21,6 +21,8 @@ export interface MobilePublishPayload {
     keystoreAlias: string;
     keystorePasswordSecret: string;
     keyPasswordSecret: string;
+    versionName?: string;
+    versionCode?: number;
   };
 
   ios: {
@@ -31,6 +33,8 @@ export interface MobilePublishPayload {
     issuerId: string;
     apiKeySecret: string;
     provisionProfile: string;
+    version?: string;
+    buildNumber?: number;
   };
 
   branding: {
