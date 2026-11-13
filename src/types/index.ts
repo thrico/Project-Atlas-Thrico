@@ -16,13 +16,18 @@ export interface MobilePublishPayload {
 
   android: {
     packageName: string;
-    firebaseConfig: string;
-    keystore: string;
+    firebaseConfig?: string;
+    keystore?: string;
+    serviceJsonPath?: string;
+    googleServicesJsonPath?: string;
+    keystorePath?: string;
     keystoreAlias: string;
     keystorePasswordSecret: string;
     keyPasswordSecret: string;
     versionName?: string;
     versionCode?: number;
+    track?: string;
+    releaseStatus?: string;
   };
 
   ios: {
@@ -33,6 +38,9 @@ export interface MobilePublishPayload {
     issuerId: string;
     apiKeySecret: string;
     provisionProfile: string;
+    signingCertPath?: string;
+    signingCertPassword?: string;
+    exportMethod?: string;
     version?: string;
     buildNumber?: number;
   };
@@ -41,9 +49,12 @@ export interface MobilePublishPayload {
     logo: string;
     icon: string;
     splash: string;
+    font?: string;
     primaryColor: string;
     secondaryColor: string;
     accentColor: string;
+    primaryGradientStart?: string;
+    primaryGradientEnd?: string;
   };
 
   store: {

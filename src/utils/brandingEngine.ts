@@ -7,7 +7,7 @@ import { MobilePublishPayload } from '../types';
 export class BrandingEngine {
   static async applyBranding(workingDir: string, payload: MobilePublishPayload) {
     console.log(`Applying branding for ${payload.app.name}...`);
-    
+
     // 1. Android - Update App Name in strings.xml
     const androidStringsPath = path.join(workingDir, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml');
     if (fs.existsSync(androidStringsPath)) {
@@ -15,7 +15,7 @@ export class BrandingEngine {
       const parser = new xml2js.Parser();
       const builder = new xml2js.Builder();
       const result = await parser.parseStringPromise(xmlString);
-      
+
       if (result.resources && result.resources.string) {
         for (const str of result.resources.string) {
           if (str.$ && str.$.name === 'app_name') {
@@ -31,25 +31,25 @@ export class BrandingEngine {
     const iosInfoPlistPath = path.join(workingDir, 'ios', 'Thrico', 'Info.plist');
     if (fs.existsSync(iosInfoPlistPath)) {
       let plistContent = fs.readFileSync(iosInfoPlistPath, 'utf8');
-      
+
       // Update App Name
       const nameRegex = /<key>CFBundleDisplayName<\/key>\s*<string>.*?<\/string>/;
       plistContent = plistContent.replace(nameRegex, `<key>CFBundleDisplayName</key>\n\t<string>${payload.app.name}</string>`);
-      
+
       // Update Version Name
       const vName = payload.ios?.version || payload.app.version;
       const vCode = payload.ios?.buildNumber || payload.app.buildNumber;
 
       const versionRegex = /<key>CFBundleShortVersionString<\/key>\s*<string>.*?<\/string>/;
       plistContent = plistContent.replace(versionRegex, `<key>CFBundleShortVersionString</key>\n\t<string>${vName}</string>`);
-      
+
       // Update Build Number
       const buildRegex = /<key>CFBundleVersion<\/key>\s*<string>.*?<\/string>/;
       plistContent = plistContent.replace(buildRegex, `<key>CFBundleVersion</key>\n\t<string>${vCode}</string>`);
-      
+
       // Update hardcoded permission names
       plistContent = plistContent.replace(/Thrico needs/g, `${payload.app.name} needs`);
-      
+
       fs.writeFileSync(iosInfoPlistPath, plistContent);
       console.log(`Updated iOS app name to ${payload.app.name}, version ${vName} (${vCode})`);
     }
@@ -79,19 +79,19 @@ export class BrandingEngine {
     const androidBuildGradlePath = path.join(workingDir, 'android', 'app', 'build.gradle');
     if (fs.existsSync(androidBuildGradlePath)) {
       let gradleContent = fs.readFileSync(androidBuildGradlePath, 'utf8');
-      
+
       const appIdRegex = /applicationId\s+["'][^"']+["']/g;
       gradleContent = gradleContent.replace(appIdRegex, `applicationId "${sanitizedPackageName}"`);
-      
+
       const vName = payload.android?.versionName || payload.app.version;
       const vCode = payload.android?.versionCode || payload.app.buildNumber;
-      
+
       const vNameRegex = /versionName\s+["'][^"']+["']/g;
       gradleContent = gradleContent.replace(vNameRegex, `versionName "${vName}"`);
-      
+
       const vCodeRegex = /versionCode\s+\d+/g;
       gradleContent = gradleContent.replace(vCodeRegex, `versionCode ${vCode}`);
-      
+
       fs.writeFileSync(androidBuildGradlePath, gradleContent);
       console.log(`Updated Android applicationId, versionName (${vName}) and versionCode (${vCode})`);
     }
@@ -114,23 +114,23 @@ export class BrandingEngine {
 
     // 7. Overwrite in-app assets (assets/logo.png AND assets/images/logo.png)
     const rootLogoPath = path.join(workingDir, 'logo.png');
-    
+
     if (fs.existsSync(rootLogoPath)) {
       const inAppLogoDir1 = path.join(workingDir, 'assets');
       const inAppLogoDir2 = path.join(workingDir, 'assets', 'images');
-      
+
       if (!fs.existsSync(inAppLogoDir1)) fs.mkdirSync(inAppLogoDir1, { recursive: true });
       if (!fs.existsSync(inAppLogoDir2)) fs.mkdirSync(inAppLogoDir2, { recursive: true });
-      
+
       // Use sharp to convert WebP/mismatched format to a true PNG to prevent AAPT compilation errors
       await sharp(rootLogoPath)
         .png()
         .toFile(path.join(inAppLogoDir1, 'logo.png'));
-        
+
       await sharp(rootLogoPath)
         .png()
         .toFile(path.join(inAppLogoDir2, 'logo.png'));
-      
+
       console.log('Updated in-app assets/logo.png and assets/images/logo.png (converted to true PNG)');
     }
 
@@ -139,7 +139,12 @@ export class BrandingEngine {
     const envVars = [
       'EXPO_PUBLIC_GOOGLE_MAPS_API_KEY="AIzaSyCJ2V6iHaVtyMC0zl0cBF6mktw3sdJblX4"',
       'EXPO_PUBLIC_SENTRY_DSN=https://82615fed55ff5d39f55c9bac49373c1b@o4510951464828928.ingest.de.sentry.io/4511329743142992',
-      `EXPO_PUBLIC_BUNDLE_ID="${payload.ios.bundleId}"`
+      'EXPO_PUBLIC_API_URL=https://prod-mobile.thrico.app/graphql',
+      'EXPO_PUBLIC_WS_URL=wss://prod-mobile.thrico.app/graphql',
+      'EXPO_PUBLIC_APP_TYPE=custom',
+      `EXPO_PUBLIC_ENTITY_ID="${payload.android?.packageName}"`,
+
+      `EXPO_PUBLIC_PACKAGE="${payload.android?.packageName}"`
     ].join('\n');
 
     if (fs.existsSync(envPath)) {

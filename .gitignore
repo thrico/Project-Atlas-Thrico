@@ -1,1 +1,13 @@
 node_modules
+dist/
+.DS_Store
+**/.DS_Store
+
+# Certificates, keys and sensitive files
+src/ios-cert/
+*.p8
+*.p12
+*.mobileprovision
+*.cer
+*.keystore
+*.certSigningRequest

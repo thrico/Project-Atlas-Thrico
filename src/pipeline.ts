@@ -11,6 +11,7 @@ import {
   buildIOS,
   uploadArtifacts,
   cleanupBuild,
+  applyDynamicWhitelabeling,
 } from "./steps";
 
 export class BuildPipeline {
@@ -50,18 +51,19 @@ export class BuildPipeline {
       await runStep("Apply Branding", () => applyBranding(this.workDir, this.payload));
       await runStep("Generate Assets", () => generateAssets(this.workDir, this.payload));
       await runStep("Install Dependencies", () => installDependencies(this.workDir));
+      await runStep("Apply Dynamic Whitelabeling", () => applyDynamicWhitelabeling(this.workDir, this.payload));
 
-      if (this.platform === "android" || this.platform === "both") {
-        await runStep("Build Android", () => buildAndroid(this.workDir, this.payload));
-      }
+      // if (this.platform === "android" || this.platform === "both") {
+      //   await runStep("Build Android", () => buildAndroid(this.workDir, this.payload));
+      // }
 
       if (this.platform === "ios" || this.platform === "both") {
         await runStep("Build iOS", () => buildIOS(this.workDir, this.payload));
       }
 
       await runStep("Upload Artifacts", () => uploadArtifacts(this.workDir, this.buildId));
-      
-      await runStep("Cleanup Build", () => cleanupBuild(this.workDir));
+
+      await runStep("Cleanup Build", async () => cleanupBuild(this.workDir));
 
       console.log(`Build pipeline ${this.buildId} completed successfully!`);
     } catch (error) {

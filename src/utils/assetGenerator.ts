@@ -127,7 +127,7 @@ export class AssetGenerator {
       "ios",
       "Thrico",
       "Images.xcassets",
-      "SplashIcon.imageset",
+      "SplashScreen.imageset",
     );
 
     if (!fs.existsSync(androidResDir)) {

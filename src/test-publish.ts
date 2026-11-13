@@ -1,5 +1,6 @@
 import amqp from "amqplib";
 import dotenv from "dotenv";
+import path from "path";
 
 dotenv.config();
 
@@ -20,44 +21,53 @@ async function testPublish() {
     environment: "production",
 
     app: {
-      name: "The shepherd Tribe",
-      shortName: "the-shepherd-tribe",
-      description: "Official the-shepherd-tribe App",
+      name: "Thrico Social",
+      shortName: "Thrico Social",
+      description: "Official Thrico Social App",
       version: "1.2.0",
       buildNumber: 12,
     },
 
     android: {
-      packageName: "com.thrico.thricosocial",
-      firebaseConfig: "s3://mobile/firebase/google-services.json",
-      keystore: "s3://mobile/keystore/release.keystore",
-      keystoreAlias: "release",
-      keystorePasswordSecret: "MyStrongPassword123!",
-      keyPasswordSecret: "MyStrongPassword123!",
-      versionName: "1.2.1",
-      versionCode: 13,
+      packageName: "com.thricosocial.thricosocial",
+      serviceJsonPath: "f5827d97-eedf-4b89-b5be-535ca09d5854/mobile_app/secure-ja7jq-thrico-4e091-a29e53b7d58c.json",
+      googleServicesJsonPath: "f5827d97-eedf-4b89-b5be-535ca09d5854/mobile_app/secure-mbyc7-google-services__4_.json",
+      keystorePath: "f5827d97-eedf-4b89-b5be-535ca09d5854/mobile_app/secure-hwrqz-thricosocial-release.keystore",
+      keystoreAlias: "thricosocial",
+      keystorePasswordSecret: "123456",
+      keyPasswordSecret: "123456",
+      versionName: "1.2.11",
+      versionCode: 21,
+      track: "production",
+      releaseStatus: "draft",
     },
 
     ios: {
-      bundleId: "com.the-shepherd-tribe.community",
-      firebaseConfig: "s3://mobile/firebase/GoogleService-Info.plist",
-      teamId: "ABCDE12345",
-      keyId: "XYZ123456",
-      issuerId: "550e8400-e29b-41d4-a716-446655440000",
-      apiKeySecret: "secret/apple-api-key",
-      provisionProfile: "AppStore_Profile.mobileprovision",
-      version: "1.2.2",
-      buildNumber: 14,
+      bundleId: "com.thricosocial.thricosocial",
+      firebaseConfig: path.join(__dirname, "ios-cert", "GoogleService-Info.plist"),
+      teamId: "ZQHJSX736B",
+      keyId: "2X5A72PNTG",
+      issuerId: "bbb982a2-0b05-4f70-9d43-d40b3f72858d",
+      apiKeySecret: path.join(__dirname, "ios-cert", "AuthKey_2X5A72PNTG.p8"),
+      provisionProfile: path.join(__dirname, "ios-cert", "ThricoSocial_App_Store_Profile.mobileprovision"),
+      signingCertPath: path.join(__dirname, "ios-cert", "distribution.p12"),
+      signingCertPassword: "Thrico@123",
+      exportMethod: "app-store",
+      version: "1.2.10",
+      buildNumber: 20,
     },
 
     branding: {
-      logo: "https://cdn.thrico.network/8b9ee2d3-4e92-4fa5-a84d-887bbbef0dd6/general/2b20d3c1-1188-4453-8e80-8ef2bca2455b/20260601-70fw1.webp",
-      icon: "https://cdn.thrico.network/8b9ee2d3-4e92-4fa5-a84d-887bbbef0dd6/general/2b20d3c1-1188-4453-8e80-8ef2bca2455b/20260601-70fw1.webp",
+      logo: "https://pulseplaydigital.sgp1.digitaloceanspaces.com/20260721-57azx-chatgpt-image-jul-21--2026--01-53-13-pm",
+      icon: "https://pulseplaydigital.sgp1.digitaloceanspaces.com/20260721-57azx-chatgpt-image-jul-21--2026--01-53-13-pm",
       splash:
-        "https://thrico-storage.s3.ap-south-1.amazonaws.com/android-splash.png",
-      primaryColor: "#0055FF",
-      secondaryColor: "#FFFFFF",
-      accentColor: "#FFB800",
+        "https://pulseplaydigital.sgp1.digitaloceanspaces.com/20260721-omri5-ios",
+      font: "@expo-google-fonts/geist",
+      primaryColor: "#00FFA4",
+      secondaryColor: "#4AAFF7",
+      accentColor: "#FF0055",
+      primaryGradientStart: "#00FFA4",
+      primaryGradientEnd: "#4AAFF7",
     },
 
     store: {
@@ -69,7 +79,7 @@ async function testPublish() {
 
     git: {
       repository: "git@github.com:thrico/mobile.git",
-      branch: "main",
+      branch: "develop",
       commit: "latest",
     },
 
@@ -92,4 +102,7 @@ async function testPublish() {
   }, 500);
 }
 
-testPublish().catch(console.error);
+testPublish().catch((error) => {
+  console.error("Error occurred while publishing:", error);
+  process.exit(1);
+});

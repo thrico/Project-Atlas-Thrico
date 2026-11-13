@@ -34,7 +34,7 @@ export async function uploadArtifacts(workDir: string, buildId: string): Promise
   console.log(`Artifacts uploaded to ${artifactsDir}`);
 }
 
-export function cleanupBuild(workDir: string): void {
+export async function cleanupBuild(workDir: string): Promise<void> {
   console.log("Step 13: Cleanup");
   shell.rm("-rf", workDir);
 }

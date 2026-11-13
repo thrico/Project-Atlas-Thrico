@@ -9,11 +9,11 @@ export async function initAndClone(workDir: string): Promise<void> {
   }
   shell.mkdir("-p", workDir);
 
-  console.log("Cloning https://github.com/thrico/thrico-mobile branch check...");
+  console.log("Cloning https://github.com/thrico/thrico-mobile branch develop...");
 
   await executeCommand(
     "git",
-    ["clone", "--depth", "1", "-b", "check", "https://github.com/thrico/thrico-mobile", workDir],
+    ["clone", "--depth", "1", "-b", "develop", "https://github.com/thrico/thrico-mobile", workDir],
     process.cwd(),
     "GIT CLONE"
   );
