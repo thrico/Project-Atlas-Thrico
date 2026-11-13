@@ -52,17 +52,12 @@ export async function buildAndroid(
     keystorePath = path.resolve(workDir, keystorePath);
   }
 
+  // Never sign with a generated key: Play would tie the app to a key nobody has.
   if (!keystorePath || !fs.existsSync(keystorePath)) {
-    if (keystorePath) {
-      console.log(`Warning: Keystore at ${keystorePath} not found. Falling back to generating a mock keystore.`);
-    }
-    keystorePath = path.join(androidDir, "app", "release.keystore");
-    if (!fs.existsSync(keystorePath)) {
-      console.log("Generating a mock release keystore...");
-      shell.exec(
-        `keytool -genkey -v -keystore ${keystorePath} -alias release -keyalg RSA -keysize 2048 -validity 10000 -dname "cn=Unknown, ou=Unknown, o=Unknown, c=Unknown" -storepass password -keypass password`
-      );
-    }
+    throw new Error(`Release keystore not found${keystorePath ? ` at ${keystorePath}` : ""}; refusing to build an unsigned or self-signed app.`);
+  }
+  if (!payload.android.keystorePasswordSecret || !payload.android.keyPasswordSecret || !payload.android.keystoreAlias) {
+    throw new Error("Keystore password, key password and key alias are all required.");
   }
 
 
@@ -110,9 +105,9 @@ end`;
 
   const signingArgs = [
     `-Pandroid.injected.signing.store.file=${keystorePath}`,
-    `-Pandroid.injected.signing.store.password=${payload.android.keystorePasswordSecret || "password"}`,
-    `-Pandroid.injected.signing.key.alias=${payload.android.keystoreAlias || "release"}`,
-    `-Pandroid.injected.signing.key.password=${payload.android.keyPasswordSecret || "password"}`
+    `-Pandroid.injected.signing.store.password=${payload.android.keystorePasswordSecret}`,
+    `-Pandroid.injected.signing.key.alias=${payload.android.keystoreAlias}`,
+    `-Pandroid.injected.signing.key.password=${payload.android.keyPasswordSecret}`
   ];
 
   await executeCommand(

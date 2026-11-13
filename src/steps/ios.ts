@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import shell from "shelljs";
@@ -164,7 +165,7 @@ export async function buildIOS(
 
     // Import certificate into a temporary keychain for CI
     const keychainName = `build-${payload.buildId}.keychain`;
-    const keychainPassword = "build-temp-password";
+    const keychainPassword = crypto.randomBytes(24).toString("hex"); // temporary keychain, deleted after the build
     const isP12 = certPath.endsWith(".p12");
 
     await executeCommand(

@@ -11,3 +11,6 @@ src/ios-cert/
 *.cer
 *.keystore
 *.certSigningRequest
+
+# Local settings and secrets
+.env

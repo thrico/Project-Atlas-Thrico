@@ -136,11 +136,17 @@ export class BrandingEngine {
 
     // 8. Inject Environment Variables into .env
     const envPath = path.join(workingDir, '.env');
+    // App-wide settings come from the worker's environment (see .env.example), never from source.
+    const required = (name: string) => {
+      const value = process.env[name];
+      if (!value) throw new Error(`Missing ${name} in the build worker's environment`);
+      return value;
+    };
     const envVars = [
-      'EXPO_PUBLIC_GOOGLE_MAPS_API_KEY="AIzaSyCJ2V6iHaVtyMC0zl0cBF6mktw3sdJblX4"',
-      'EXPO_PUBLIC_SENTRY_DSN=https://82615fed55ff5d39f55c9bac49373c1b@o4510951464828928.ingest.de.sentry.io/4511329743142992',
-      'EXPO_PUBLIC_API_URL=https://prod-mobile.thrico.app/graphql',
-      'EXPO_PUBLIC_WS_URL=wss://prod-mobile.thrico.app/graphql',
+      `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY="${required('APP_GOOGLE_MAPS_API_KEY')}"`,
+      `EXPO_PUBLIC_SENTRY_DSN=${process.env.APP_SENTRY_DSN ?? ''}`,
+      `EXPO_PUBLIC_API_URL=${required('APP_API_URL')}`,
+      `EXPO_PUBLIC_WS_URL=${required('APP_WS_URL')}`,
       'EXPO_PUBLIC_APP_TYPE=custom',
       `EXPO_PUBLIC_ENTITY_ID="${payload.android?.packageName}"`,
 
