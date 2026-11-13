@@ -4,6 +4,19 @@ import xml2js from 'xml2js';
 import sharp from 'sharp';
 import { MobilePublishPayload } from '../types';
 
+/** EAS channel and branch for a white-label app, from its native id (same as otaTarget in @thrico/database). */
+export const otaTarget = (nativeId?: string): string => {
+  if (!nativeId) throw new Error('An Android package name or iOS bundle ID is required to set the OTA channel');
+  return `app-${nativeId.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+};
+
+/** Replace the channel in one file; fail the build if the setting isn't there (it would stay on "production"). */
+const setOtaChannel = (file: string, pattern: RegExp, channel: string) => {
+  const content = fs.readFileSync(file, 'utf8');
+  if (!pattern.test(content)) throw new Error(`OTA channel setting not found in ${file}`);
+  fs.writeFileSync(file, content.replace(pattern, `$1${channel}$2`));
+};
+
 export class BrandingEngine {
   static async applyBranding(workingDir: string, payload: MobilePublishPayload) {
     console.log(`Applying branding for ${payload.app.name}...`);
@@ -159,5 +172,14 @@ export class BrandingEngine {
       fs.writeFileSync(envPath, envVars + '\n');
     }
     console.log('Injected environment variables into .env');
+
+    // 9. OTA channel: each app follows its own EAS channel/branch, so an update reaches it only when
+    //    an admin sends it from the dashboard. Must match otaTarget() in @thrico/database.
+    const target = otaTarget(payload.android?.packageName || payload.ios?.bundleId);
+    const manifestPath = path.join(workingDir, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+    const expoPlistPath = path.join(workingDir, 'ios', 'Thrico', 'Supporting', 'Expo.plist');
+    setOtaChannel(manifestPath, /(&quot;expo-channel-name&quot;:&quot;)[^&]*(&quot;)/, target);
+    setOtaChannel(expoPlistPath, /(<key>expo-channel-name<\/key>\s*<string>)[^<]*(<\/string>)/, target);
+    console.log(`Set OTA channel to ${target}`);
   }
 }
