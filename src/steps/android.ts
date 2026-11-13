@@ -4,132 +4,66 @@ import fs from "fs";
 import { executeCommand } from "../utils/command";
 import { MobilePublishPayload } from "../types";
 
-async function downloadFile(url: string, dest: string): Promise<void> {
-  console.log(`Downloading ${url} to ${dest}...`);
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to download ${url}: ${response.statusText}`);
-  }
-  const buffer = await response.arrayBuffer();
-  fs.writeFileSync(dest, Buffer.from(buffer));
-}
+const androidEnv = () => ({
+  ANDROID_HOME: process.env.ANDROID_HOME || `${process.env.HOME}/Library/Android/sdk`,
+});
 
-export async function buildAndroid(
-  workDir: string,
-  payload: MobilePublishPayload,
-): Promise<void> {
-  console.log("Step 10: Android Build");
+export async function buildAndroid(workDir: string, payload: MobilePublishPayload): Promise<void> {
   const androidDir = path.join(workDir, "android");
-
-  // Ensure gradle wrapper has execution permissions
   shell.chmod("+x", path.join(androidDir, "gradlew"));
 
-  // Download dynamic payload files if provided
-  if (payload.android.keystorePath && !payload.android.keystorePath.startsWith('/')) {
-    const keystoreUrl = `https://cdn.thrico.network/${payload.android.keystorePath}`;
-    const dest = path.join(androidDir, "app", "release.keystore");
-    await downloadFile(keystoreUrl, dest);
-    payload.android.keystorePath = dest;
-  }
-
-  if (payload.android.serviceJsonPath && !payload.android.serviceJsonPath.startsWith('/')) {
-    const serviceUrl = `https://cdn.thrico.network/${payload.android.serviceJsonPath}`;
-    const dest = path.join(androidDir, "google-services-account.json");
-    await downloadFile(serviceUrl, dest);
-    payload.android.serviceJsonPath = dest;
-  }
-
-  if (payload.android.googleServicesJsonPath && !payload.android.googleServicesJsonPath.startsWith('/')) {
-    const googleServicesUrl = `https://cdn.thrico.network/${payload.android.googleServicesJsonPath}`;
-    const dest = path.join(androidDir, "app", "google-services.json");
-    await downloadFile(googleServicesUrl, dest);
-    payload.android.googleServicesJsonPath = dest;
-  }
-
-  // Use provided keystore or generate a real release keystore to satisfy Google Play's signature requirements
-  let keystorePath = payload.android.keystorePath;
-  if (keystorePath) {
-    keystorePath = path.resolve(workDir, keystorePath);
-  }
-
   // Never sign with a generated key: Play would tie the app to a key nobody has.
+  const keystorePath = payload.android.keystorePath;
   if (!keystorePath || !fs.existsSync(keystorePath)) {
-    throw new Error(`Release keystore not found${keystorePath ? ` at ${keystorePath}` : ""}; refusing to build an unsigned or self-signed app.`);
+    throw new Error("Release keystore (android_keystore) is missing; refusing to build an unsigned or self-signed app.");
   }
   if (!payload.android.keystorePasswordSecret || !payload.android.keyPasswordSecret || !payload.android.keystoreAlias) {
     throw new Error("Keystore password, key password and key alias are all required.");
   }
 
-
-  // Setup Fastlane
-  const fastlaneDir = path.join(androidDir, "fastlane");
-  if (!fs.existsSync(fastlaneDir)) {
-    fs.mkdirSync(fastlaneDir, { recursive: true });
-  }
-
-  // Determine the fastlane json_key path dynamically based on payload
-  const serviceJsonKeyPath = payload.android.serviceJsonPath || "google-services-account.json";
-
-  const fastfileContent = `default_platform(:android)
-
-platform :android do
-  desc "Publish the Android App to Google Play Store"
-  lane :publish do
-    upload_to_play_store(
-      track: "${payload.android.track || 'internal'}",
-      release_status: "${payload.android.releaseStatus || 'completed'}",
-      json_key: "${serviceJsonKeyPath}",
-      package_name: "${payload.android.packageName}",
-      aab: "app/build/outputs/bundle/release/app-release.aab",
-      skip_upload_metadata: true,
-      skip_upload_images: true,
-      skip_upload_screenshots: true
-    )
-  end
-
-  error do |lane, exception|
-    puts("Error occurred in lane '#{lane}': #{exception.message}")
-  end
-end`;
-
-  // Write Fastfile to disk
-  const fastfilePath = path.join(fastlaneDir, "Fastfile");
-  fs.writeFileSync(fastfilePath, fastfileContent); // Force overwrite for POC
-  const envOverride = {
-    ANDROID_HOME:
-      process.env.ANDROID_HOME || `${process.env.HOME}/Library/Android/sdk`,
-  };
-
-  // Perform actual build using gradle directly
-  console.log("Building actual APK via gradle...");
-
   const signingArgs = [
     `-Pandroid.injected.signing.store.file=${keystorePath}`,
     `-Pandroid.injected.signing.store.password=${payload.android.keystorePasswordSecret}`,
     `-Pandroid.injected.signing.key.alias=${payload.android.keystoreAlias}`,
-    `-Pandroid.injected.signing.key.password=${payload.android.keyPasswordSecret}`
+    `-Pandroid.injected.signing.key.password=${payload.android.keyPasswordSecret}`,
   ];
 
-  await executeCommand(
-    "./gradlew",
-    ["assembleRelease", ...signingArgs],
-    androidDir,
-    "GRADLE ASSEMBLE",
-    envOverride,
+  await executeCommand("./gradlew", ["assembleRelease", ...signingArgs], androidDir, "GRADLE ASSEMBLE", androidEnv());
+  await executeCommand("./gradlew", ["bundleRelease", ...signingArgs], androidDir, "GRADLE BUNDLE", androidEnv());
+}
+
+/**
+ * Uploads the AAB to the Play internal track as a draft release: never another track, and an admin
+ * rolls it out in Play Console (draft also works for apps Play still lists as draft).
+ */
+export async function uploadAndroid(workDir: string, payload: MobilePublishPayload) {
+  const androidDir = path.join(workDir, "android");
+  if (!payload.android.serviceJsonPath) throw new Error("Play service account key (android_playServiceAccountJson) is missing.");
+
+  const fastlaneDir = path.join(androidDir, "fastlane");
+  fs.mkdirSync(fastlaneDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(fastlaneDir, "Fastfile"),
+    `default_platform(:android)
+
+platform :android do
+  lane :publish do
+    upload_to_play_store(
+      track: "internal",
+      release_status: "draft",
+      json_key: ${JSON.stringify(payload.android.serviceJsonPath)},
+      package_name: ${JSON.stringify(payload.android.packageName)},
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      skip_upload_apk: true,
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+end`,
   );
 
-  console.log("Building actual AAB via gradle...");
-  await executeCommand(
-    "./gradlew",
-    ["bundleRelease", ...signingArgs],
-    androidDir,
-    "GRADLE BUNDLE",
-    envOverride,
-  );
-
-  // If in production, run the fastlane publish lane to upload
-  if (payload.environment === "production") {
-    console.log("Publishing Android Build to Play Store via fastlane...");
-    await executeCommand("fastlane", ["publish"], androidDir, `FASTLANE ANDROID PUBLISH`, envOverride);
-  }
+  await executeCommand("fastlane", ["publish"], androidDir, "FASTLANE ANDROID PUBLISH", androidEnv());
+  return { storeUpload: { track: "internal", status: "draft", message: "Draft release on the Play internal track" } };
 }

@@ -1,10 +1,34 @@
+/** SQS message from thrico-logic: ids only, everything else comes from the bundle endpoint. */
+export interface BuildMessage {
+  buildId: string;
+  appId: string;
+  platform: 'android' | 'ios';
+  gitRef: string;
+}
+
+/** GET /worker/builds/:id/bundle (thrico-logic src/schema/custom-app/builds.ts buildBundle). */
+export interface BuildBundle {
+  build: { id: string; platform: 'android' | 'ios'; gitRef: string; versionName: string; buildNumber: number };
+  app: {
+    id: string;
+    entityId: string;
+    appName: string;
+    androidPackageName?: string;
+    iosBundleId?: string;
+    branding: Record<string, any>;
+    android: { keystoreAlias?: string; [k: string]: any };
+    ios: { appleTeamId?: string; [k: string]: any };
+    eas: Record<string, any>;
+    cdnUrl: string;
+  };
+  secrets: Record<string, { kind: 'text' | 'file'; fileName?: string; value: string }>;
+}
+
 export interface MobilePublishPayload {
   buildId: string;
-  jobId: string;
   entityId: string;
   appId: string;
-  platform: 'android' | 'ios' | 'both';
-  environment: string;
+  platform: 'android' | 'ios';
 
   app: {
     name: string;
@@ -14,30 +38,25 @@ export interface MobilePublishPayload {
     buildNumber: number;
   };
 
+  /** Key paths are absolute files inside the build folder, written from the bundle. */
   android: {
     packageName: string;
-    firebaseConfig?: string;
-    keystore?: string;
     serviceJsonPath?: string;
-    googleServicesJsonPath?: string;
     keystorePath?: string;
     keystoreAlias: string;
     keystorePasswordSecret: string;
     keyPasswordSecret: string;
     versionName?: string;
     versionCode?: number;
-    track?: string;
-    releaseStatus?: string;
   };
 
   ios: {
     bundleId: string;
-    firebaseConfig: string;
     teamId: string;
     keyId: string;
     issuerId: string;
-    apiKeySecret: string;
-    provisionProfile: string;
+    apiKeySecret?: string;
+    provisionProfile?: string;
     signingCertPath?: string;
     signingCertPassword?: string;
     exportMethod?: string;
@@ -57,38 +76,7 @@ export interface MobilePublishPayload {
     primaryGradientEnd?: string;
   };
 
-  store: {
-    appStoreName: string;
-    playStoreName: string;
-    privacyPolicy: string;
-    terms: string;
-  };
-
   git: {
-    repository: string;
     branch: string;
-    commit: string;
   };
-
-  artifacts: {
-    output: string;
-  };
-
-  createdBy: {
-    userId: string;
-    name: string;
-  };
-}
-
-export interface EntityConfig {
-  appName: string;
-  packageName: string;
-  bundleId: string;
-  theme: string;
-  colors: {
-    primary: string;
-    secondary: string;
-    background: string;
-  };
-  version: string;
 }

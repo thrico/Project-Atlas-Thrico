@@ -14,3 +14,7 @@ src/ios-cert/
 
 # Local settings and secrets
 .env
+
+# Build folders (hold keys while a build runs) and built apps
+builds/
+artifacts/

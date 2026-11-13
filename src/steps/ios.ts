@@ -1,80 +1,27 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import shell from "shelljs";
+import { execFileSync } from "child_process";
 import { MobilePublishPayload } from "../types";
 import { executeCommand } from "../utils/command";
 
-async function downloadFile(url: string, dest: string): Promise<void> {
-  console.log(`Downloading ${url} to ${dest}...`);
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to download ${url}: ${response.statusText}`);
-  }
-  const buffer = await response.arrayBuffer();
-  fs.writeFileSync(dest, Buffer.from(buffer));
-}
+export const keychainName = (buildId: string) => `build-${buildId}.keychain`;
 
 export async function buildIOS(
   workDir: string,
   payload: MobilePublishPayload,
 ): Promise<void> {
-  console.log("Step 11: iOS Build");
   const iosDir = path.join(workDir, "ios");
 
-  // ─── 1. Resolve signing assets (local or CDN) ───
+  // ─── 1. Signing assets, written into the build folder from the bundle ───
+  // Never fall back to automatic or ad-hoc signing: a store build needs the app's own certificate.
+  const { signingCertPath: certPath, provisionProfile: provisionProfilePath, teamId } = payload.ios;
+  if (!certPath || !fs.existsSync(certPath)) throw new Error("Distribution certificate (ios_distributionCertP12) is missing.");
+  if (!provisionProfilePath || !fs.existsSync(provisionProfilePath)) throw new Error("Provisioning profile (ios_provisioningProfile) is missing.");
+  if (!teamId) throw new Error("Apple team ID is missing on the app.");
 
-  // Resolve GoogleService-Info.plist (Firebase config)
-  if (payload.ios.firebaseConfig) {
-    const dest = path.join(iosDir, "GoogleService-Info.plist");
-    if (payload.ios.firebaseConfig.startsWith("/")) {
-      // Local file — copy to ios dir
-      fs.copyFileSync(payload.ios.firebaseConfig, dest);
-      console.log(`Copied local Firebase config to ${dest}`);
-    } else {
-      // CDN path — download
-      const firebaseUrl = `https://cdn.thrico.network/${payload.ios.firebaseConfig}`;
-      await downloadFile(firebaseUrl, dest);
-      console.log(`Firebase config saved to ${dest}`);
-    }
-  }
-
-  // Resolve App Store Connect API Key (.p8)
-  let apiKeyPath: string | undefined;
-  if (payload.ios.apiKeySecret) {
-    if (payload.ios.apiKeySecret.startsWith("/")) {
-      // Local file path — use directly
-      apiKeyPath = payload.ios.apiKeySecret;
-      console.log(`Using local API key: ${apiKeyPath}`);
-    } else {
-      // CDN path — download
-      const apiKeyUrl = `https://cdn.thrico.network/${payload.ios.apiKeySecret}`;
-      apiKeyPath = path.join(workDir, `AuthKey_${payload.ios.keyId}.p8`);
-      await downloadFile(apiKeyUrl, apiKeyPath);
-      console.log(`API key saved to ${apiKeyPath}`);
-    }
-  }
-
-  // Resolve Provisioning Profile (.mobileprovision)
-  let provisionProfilePath: string | undefined;
   let profileUUIDStr: string | undefined;
-  
-  if (payload.ios.provisionProfile) {
-    if (payload.ios.provisionProfile.startsWith("/")) {
-      // Local file path — use directly
-      provisionProfilePath = payload.ios.provisionProfile;
-      console.log(`Using local provisioning profile: ${provisionProfilePath}`);
-    } else {
-      // CDN path — download
-      const profileUrl = `https://cdn.thrico.network/${payload.ios.provisionProfile}`;
-      provisionProfilePath = path.join(
-        workDir,
-        "AppStore_Profile.mobileprovision",
-      );
-      await downloadFile(profileUrl, provisionProfilePath);
-      console.log(`Provisioning profile saved to ${provisionProfilePath}`);
-    }
-
+  {
     // Install provisioning profile to ~/Library/MobileDevice/Provisioning Profiles/
     const profilesDir = path.join(
       process.env.HOME || "~",
@@ -90,139 +37,53 @@ export async function buildIOS(
     } else {
       fs.mkdirSync(profilesDir, { recursive: true });
     }
-    
+
     // Extract UUID from the profile
-    const { execSync } = require("child_process");
-    const uuidMatch = execSync(
-      `security cms -D -i "${provisionProfilePath}" | grep -A 1 UUID`
-    ).toString();
-    const profileUUID = uuidMatch.match(/<string>(.*?)<\/string>/)?.[1];
-    
-    if (profileUUID) {
-      const targetProfilePath = path.join(profilesDir, `${profileUUID}.mobileprovision`);
-      fs.copyFileSync(provisionProfilePath, targetProfilePath);
-      console.log(`Provisioning profile installed as ${profileUUID}.mobileprovision`);
-      profileUUIDStr = profileUUID;
-    } else {
-      console.warn("Could not extract UUID from provisioning profile. Falling back to basename.");
-      fs.copyFileSync(
-        provisionProfilePath,
-        path.join(profilesDir, path.basename(provisionProfilePath)),
-      );
-      console.log("Provisioning profile installed.");
-    }
+    const uuidMatch = execFileSync("security", ["cms", "-D", "-i", provisionProfilePath], { encoding: "utf8" });
+    const profileUUID = /<key>UUID<\/key>\s*<string>(.*?)<\/string>/.exec(uuidMatch)?.[1];
+    if (!profileUUID) throw new Error("Could not read the UUID of the provisioning profile.");
+    fs.copyFileSync(provisionProfilePath, path.join(profilesDir, `${profileUUID}.mobileprovision`));
+    console.log(`Provisioning profile installed as ${profileUUID}.mobileprovision`);
+    profileUUIDStr = profileUUID;
   }
 
-  // Resolve Distribution Certificate (.p12 or .cer) if provided
-  let certPath: string | undefined;
-  if (payload.ios.signingCertPath) {
-    if (payload.ios.signingCertPath.startsWith("/")) {
-      // Local file path — use directly
-      certPath = payload.ios.signingCertPath;
-      console.log(`Using local certificate: ${certPath}`);
-    } else {
-      // CDN path — download
-      const certUrl = `https://cdn.thrico.network/${payload.ios.signingCertPath}`;
-      certPath = path.join(workDir, "distribution.p12");
-      await downloadFile(certUrl, certPath);
-      console.log(`Distribution certificate saved to ${certPath}`);
+  // Fail fast on a wrong certificate. The password goes through the environment, not the command line.
+  try {
+    const output = execFileSync(
+      "openssl",
+      ["pkcs12", "-info", "-in", certPath, "-passin", "env:P12_PASS", "-passout", "pass:dummy"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, P12_PASS: payload.ios.signingCertPassword || "" } },
+    );
+    if (output.includes("Apple Development")) {
+      throw new Error("The .p12 holds an 'Apple Development' certificate; App Store builds need 'Apple Distribution'.");
     }
-
-    // Verify .p12 file contents before proceeding (fails fast if wrong cert is provided)
-    if (certPath.endsWith(".p12")) {
-      try {
-        console.log(`Verifying contents of ${certPath}...`);
-        const { execSync } = require("child_process");
-        const password = payload.ios.signingCertPassword || "";
-        const output = execSync(
-          `openssl pkcs12 -info -in "${certPath}" -passin pass:"${password}" -passout pass:dummy 2>&1`,
-          { encoding: "utf8" }
-        );
-
-        if (output.includes("Apple Development")) {
-          throw new Error(
-            "The provided .p12 file contains an 'Apple Development' certificate, but an 'Apple Distribution' certificate is required for App Store builds. Please export the correct Apple Distribution certificate from Keychain Access."
-          );
-        }
-        
-        // Ensure it doesn't just contain the private key without the actual distribution certificate
-        if (!output.includes("Apple Distribution")) {
-          console.warn(
-            "WARNING: Could not explicitly find 'Apple Distribution' string in the .p12 file. If the build fails during signing, ensure your .p12 was exported with both the certificate AND the private key selected."
-          );
-        } else {
-          console.log("Certificate verification passed: Found Apple Distribution identity.");
-        }
-      } catch (err: any) {
-        if (err.message.includes("Mac verify error: invalid password")) {
-          throw new Error("Invalid signingCertPassword provided for the .p12 file.");
-        } else if (err.message.includes("Apple Development")) {
-          throw err; // Re-throw our custom error
-        }
-        console.warn("Could not verify .p12 contents using openssl. Proceeding anyway...");
-      }
+    if (!output.includes("Apple Distribution")) {
+      console.warn("WARNING: no 'Apple Distribution' identity found in the .p12; signing may fail.");
     }
-
-    // Import certificate into a temporary keychain for CI
-    const keychainName = `build-${payload.buildId}.keychain`;
-    const keychainPassword = crypto.randomBytes(24).toString("hex"); // temporary keychain, deleted after the build
-    const isP12 = certPath.endsWith(".p12");
-
-    await executeCommand(
-      "security",
-      ["create-keychain", "-p", keychainPassword, keychainName],
-      workDir,
-      "CREATE KEYCHAIN",
-    );
-    await executeCommand(
-      "security",
-      ["unlock-keychain", "-p", keychainPassword, keychainName],
-      workDir,
-      "UNLOCK KEYCHAIN",
-    );
-    await executeCommand(
-      "security",
-      [
-        "import",
-        certPath,
-        "-k",
-        keychainName,
-        ...(isP12 ? ["-P", payload.ios.signingCertPassword || ""] : []),
-        "-T",
-        "/usr/bin/codesign",
-      ],
-      workDir,
-      "IMPORT CERT",
-    );
-    // Add the temporary keychain to the search list
-    await executeCommand(
-      "security",
-      ["list-keychains", "-d", "user", "-s", keychainName, "login.keychain"],
-      workDir,
-      "SET KEYCHAIN LIST",
-    );
-
-    // set-key-partition-list only works with .p12 (which contains private keys)
-    // .cer files only have the public certificate — skip this step for them
-    if (isP12) {
-      await executeCommand(
-        "security",
-        [
-          "set-key-partition-list",
-          "-S",
-          "apple-tool:,apple:,codesign:",
-          "-s",
-          "-k",
-          keychainPassword,
-          keychainName,
-        ],
-        workDir,
-        "SET PARTITION LIST",
-      );
-    }
-
-    console.log("Distribution certificate imported into keychain.");
+  } catch (err: any) {
+    if (`${err.message}${err.stderr ?? ""}`.includes("invalid password")) throw new Error("Wrong password for the distribution certificate (.p12).");
+    if (err.message.includes("Apple Development")) throw err;
+    console.warn("Could not verify .p12 contents using openssl. Proceeding anyway...");
   }
+
+  // Import the certificate into a temporary keychain; the pipeline deletes it after every build.
+  const keychain = keychainName(payload.buildId);
+  const keychainPassword = crypto.randomBytes(24).toString("hex");
+  await executeCommand("security", ["create-keychain", "-p", keychainPassword, keychain], workDir, "CREATE KEYCHAIN");
+  await executeCommand("security", ["unlock-keychain", "-p", keychainPassword, keychain], workDir, "UNLOCK KEYCHAIN");
+  await executeCommand(
+    "security",
+    ["import", certPath, "-k", keychain, "-P", payload.ios.signingCertPassword || "", "-T", "/usr/bin/codesign"],
+    workDir,
+    "IMPORT CERT",
+  );
+  await executeCommand("security", ["list-keychains", "-d", "user", "-s", keychain, "login.keychain"], workDir, "SET KEYCHAIN LIST");
+  await executeCommand(
+    "security",
+    ["set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", keychainPassword, keychain],
+    workDir,
+    "SET PARTITION LIST",
+  );
 
   // ─── 2. Install CocoaPods dependencies ───
 
@@ -266,84 +127,46 @@ platform :ios do
       xcargs: "${xcargs}"
     )
   end
-
-  desc "Publish the iOS App to App Store Connect / TestFlight"
-  lane :publish do
-    api_key = app_store_connect_api_key(
-      key_id: "${payload.ios.keyId}",
-      issuer_id: "${payload.ios.issuerId}",
-      key_filepath: "${apiKeyPath || ""}",
-      in_house: false
-    )
-
-    build
-
-    upload_to_testflight(
-      api_key: api_key,
-      app_identifier: "${payload.ios.bundleId}",
-      ipa: "./build/Application.ipa",
-      skip_waiting_for_build_processing: true
-    )
-  end
-
-  desc "Publish directly to App Store (skip TestFlight)"
-  lane :release do
-    api_key = app_store_connect_api_key(
-      key_id: "${payload.ios.keyId}",
-      issuer_id: "${payload.ios.issuerId}",
-      key_filepath: "${apiKeyPath || ""}",
-      in_house: false
-    )
-
-    build
-
-    upload_to_app_store(
-      api_key: api_key,
-      app_identifier: "${payload.ios.bundleId}",
-      ipa: "./build/Application.ipa",
-      force: true,
-      skip_metadata: true,
-      skip_screenshots: true,
-      precheck_include_in_app_purchases: false
-    )
-  end
-
-  error do |lane, exception|
-    puts("Error occurred in lane '#{lane}': #{exception.message}")
-  end
 end`;
 
   const fastfilePath = path.join(fastlaneDir, "Fastfile");
   fs.writeFileSync(fastfilePath, fastfileContent);
-  console.log("Fastfile written to", fastfilePath);
 
-  // ─── 4. Build IPA via Fastlane ───
-
-  console.log("Building iOS IPA via Fastlane...");
   await executeCommand("fastlane", ["build"], iosDir, "FASTLANE IOS BUILD");
 
-  // ─── 5. Publish to App Store Connect / TestFlight ───
-
-  if (payload.environment === "production") {
-    console.log("Publishing iOS Build to App Store Connect via Fastlane...");
-    // Use 'publish' lane for TestFlight, or 'release' lane for direct App Store submission
-    await executeCommand(
-      "fastlane",
-      ["publish"],
-      iosDir,
-      "FASTLANE IOS PUBLISH",
-    );
-  }
-
-  // Verify the IPA was created
   const ipaPath = path.join(iosDir, "build", "Application.ipa");
-  if (fs.existsSync(ipaPath)) {
-    // Copy IPA to workDir root for artifact upload step
-    fs.copyFileSync(ipaPath, path.join(workDir, "Application.ipa"));
-    console.log("iOS build completed — Application.ipa ready for upload.");
-  } else {
-    throw new Error(
-      "iOS build failed — Application.ipa not found at " + ipaPath,
-    );
+  if (!fs.existsSync(ipaPath)) throw new Error("iOS build failed — Application.ipa not found at " + ipaPath);
+  fs.copyFileSync(ipaPath, path.join(workDir, "Application.ipa")); // picked up by uploadArtifacts
+}
+
+/** Uploads the built IPA to TestFlight only (never App Store review); an admin submits it in App Store Connect. */
+export async function uploadIOS(workDir: string, payload: MobilePublishPayload) {
+  const iosDir = path.join(workDir, "ios");
+  const { keyId, issuerId, apiKeySecret, bundleId } = payload.ios;
+  if (!keyId || !issuerId || !apiKeySecret) {
+    throw new Error("App Store Connect API key (ios_ascApiKeyP8, ios_ascApiKeyId, ios_ascIssuerId) is missing.");
   }
+  fs.writeFileSync(
+    path.join(iosDir, "fastlane", "Fastfile"),
+    `default_platform(:ios)
+
+platform :ios do
+  lane :publish do
+    api_key = app_store_connect_api_key(
+      key_id: ${JSON.stringify(keyId)},
+      issuer_id: ${JSON.stringify(issuerId)},
+      key_filepath: ${JSON.stringify(apiKeySecret)},
+      in_house: false
+    )
+    upload_to_testflight(
+      api_key: api_key,
+      app_identifier: ${JSON.stringify(bundleId)},
+      ipa: "./build/Application.ipa",
+      skip_waiting_for_build_processing: true
+    )
+  end
+end`,
+  );
+  await executeCommand("fastlane", ["publish"], iosDir, "FASTLANE IOS PUBLISH");
+  return { storeUpload: { track: "testflight", status: "uploaded", message: "Uploaded to TestFlight; Apple is processing it" } };
 }
