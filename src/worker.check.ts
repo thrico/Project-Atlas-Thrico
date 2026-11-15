@@ -5,7 +5,7 @@ import fs from "fs";
 import http from "http";
 import os from "os";
 import path from "path";
-import { BuildReporter } from "./api";
+import { BuildReporter, retryDelays, workerCall } from "./api";
 import { prepareBuild } from "./steps/config";
 import { keystoreAlias, privateKeyAliases } from "./steps/android";
 import { execFileSync } from "child_process";
@@ -14,19 +14,31 @@ import { BuildBundle } from "./types";
 (async () => {
   const calls: { url: string; body: any }[] = [];
   let logStatus = 200;
+  let flaky = 0; // /flaky answers 502 this many times, then 200
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
       assert.equal(req.headers.authorization, `Bearer ${process.env.BUILD_WORKER_TOKEN}`);
       calls.push({ url: req.url!, body: JSON.parse(raw || "{}") });
-      res.statusCode = req.url!.endsWith("/logs") ? logStatus : 200;
+      res.statusCode = req.url!.endsWith("/logs") ? logStatus : req.url === "/flaky" && flaky-- > 0 ? 502 : req.url === "/bad" ? 400 : 200;
       res.end("{}");
     });
   });
   await new Promise<void>((r) => server.listen(0, r));
   process.env.THRICO_API_URL = `http://127.0.0.1:${(server.address() as any).port}/`;
   process.env.BUILD_WORKER_TOKEN = "t".padEnd(32, "x");
+
+  // A 5xx is retried until it clears; a 4xx is not.
+  retryDelays.ms = [1, 1, 1];
+  flaky = 2;
+  await workerCall("/flaky", { a: 1 });
+  assert.equal(calls.filter((c) => c.url === "/flaky").length, 3);
+  flaky = 9;
+  await assert.rejects(workerCall("/flaky", { a: 1 }), /502/);
+  await assert.rejects(workerCall("/bad", { a: 1 }), /400/);
+  assert.equal(calls.filter((c) => c.url === "/bad").length, 1);
+  calls.length = 0;
 
   // Logs: split per step, at most 500 lines per call.
   let gone = 0;

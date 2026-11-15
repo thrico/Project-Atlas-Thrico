@@ -6,17 +6,34 @@ export class ApiError extends Error {
   }
 }
 
+const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000];
+export const retryDelays = { ms: RETRY_DELAYS_MS }; // shortened by the self-check
+
+/** One call to thrico-logic; retries network errors and 5xx (deploys, proxy blips), never 4xx. */
 export async function workerCall(path: string, body?: unknown): Promise<any> {
   const api = (process.env.THRICO_API_URL || '').replace(/\/$/, '');
-  const res = await fetch(`${api}${path}`, {
-    method: body ? 'POST' : 'GET',
-    headers: { Authorization: `Bearer ${process.env.BUILD_WORKER_TOKEN || ''}`, 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30_000),
-  });
-  const json: any = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, `${path}: ${res.status} ${json.error ?? ''}`.trim());
-  return json;
+  for (let attempt = 0; ; attempt++) {
+    let error: Error;
+    try {
+      const res = await fetch(`${api}${path}`, {
+        method: body ? 'POST' : 'GET',
+        headers: { Authorization: `Bearer ${process.env.BUILD_WORKER_TOKEN || ''}`, 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(30_000),
+      });
+      const json: any = await res.json().catch(() => ({}));
+      if (res.ok) return json;
+      error = new ApiError(res.status, `${path}: ${res.status} ${json.error ?? ''}`.trim());
+      if (res.status < 500) throw error;
+    } catch (e: any) {
+      if (e instanceof ApiError && e.status < 500) throw e;
+      error = e;
+    }
+    const delay = retryDelays.ms[attempt];
+    if (delay === undefined) throw error;
+    console.warn(`${error.message}; retrying in ${delay / 1000}s`);
+    await new Promise((r) => setTimeout(r, delay));
+  }
 }
 
 const MAX_LINES = 500; // per /logs call (server limit)
