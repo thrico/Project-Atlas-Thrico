@@ -7,6 +7,8 @@ import os from "os";
 import path from "path";
 import { BuildReporter } from "./api";
 import { prepareBuild } from "./steps/config";
+import { keystoreAlias, privateKeyAliases } from "./steps/android";
+import { execFileSync } from "child_process";
 import { BuildBundle } from "./types";
 
 (async () => {
@@ -74,6 +76,17 @@ import { BuildBundle } from "./types";
   assert.equal(p.branding.icon, "https://cdn.example/x/icon.png");
   assert.equal(p.branding.splash, "https://other/s.png");
   assert.ok(!fs.existsSync(path.join(workDir, "..", "evil")));
+
+  // Key alias read from the keystore when the app has none set.
+  const ks = path.join(workDir, "t.ks");
+  const gen = (alias: string) =>
+    execFileSync("keytool", ["-genkeypair", "-keystore", ks, "-storepass", "pass123456", "-keypass", "pass123456", "-alias", alias, "-keyalg", "RSA", "-dname", "CN=x", "-validity", "1"], { stdio: "ignore" });
+  gen("my-upload");
+  assert.equal(keystoreAlias(ks, "pass123456"), "my-upload");
+  assert.throws(() => keystoreAlias(ks, "wrong-pass"), /Could not open the keystore/);
+  gen("second");
+  assert.throws(() => keystoreAlias(ks, "pass123456"), /holds 2 keys \(my-upload, second\)/);
+  assert.deepEqual(privateKeyAliases("Alias name: ca\nEntry type: trustedCertEntry\n\nAlias name: k\nEntry type: PrivateKeyEntry\n"), ["k"]);
 
   fs.rmSync(workDir, { recursive: true, force: true });
   server.close();
