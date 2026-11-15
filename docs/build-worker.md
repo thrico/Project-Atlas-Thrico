@@ -146,6 +146,12 @@ Kept on purpose: `artifacts/<buildId>/` (the built APK/AAB/IPA) and the installe
 - Against the real backend: queue a build from the dashboard and run `npm start -- --build <id>`, or
   `npm start` to take it from the queue.
 
+## Sentry source maps
+
+The app's Sentry plugin uploads source maps during the release build. With `SENTRY_AUTH_TOKEN` set in
+the worker's `.env` they are uploaded; without it the worker sets `SENTRY_DISABLE_AUTO_UPLOAD=true`, so
+the build still succeeds and crash reports just lack readable stack traces.
+
 ## Known limits
 
 - On a timeout, only the direct child process is killed. Grandchildren (xcodebuild under fastlane)

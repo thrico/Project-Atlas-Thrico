@@ -4,6 +4,7 @@ import path from "path";
 import { execFileSync } from "child_process";
 import { MobilePublishPayload } from "../types";
 import { executeCommand } from "../utils/command";
+import { sentryEnv } from "./android";
 
 export const keychainName = (buildId: string) => `build-${buildId}.keychain`;
 
@@ -132,7 +133,7 @@ end`;
   const fastfilePath = path.join(fastlaneDir, "Fastfile");
   fs.writeFileSync(fastfilePath, fastfileContent);
 
-  await executeCommand("fastlane", ["build"], iosDir, "FASTLANE IOS BUILD");
+  await executeCommand("fastlane", ["build"], iosDir, "FASTLANE IOS BUILD", sentryEnv());
 
   const ipaPath = path.join(iosDir, "build", "Application.ipa");
   if (!fs.existsSync(ipaPath)) throw new Error("iOS build failed — Application.ipa not found at " + ipaPath);

@@ -5,8 +5,13 @@ import { spawnSync } from "child_process";
 import { executeCommand } from "../utils/command";
 import { MobilePublishPayload } from "../types";
 
+/** Source maps go to Sentry only with SENTRY_AUTH_TOKEN; without it the app's Sentry plugin would fail the build. */
+export const sentryEnv = (): NodeJS.ProcessEnv =>
+  process.env.SENTRY_AUTH_TOKEN ? {} : { SENTRY_DISABLE_AUTO_UPLOAD: "true" };
+
 const androidEnv = () => ({
   ANDROID_HOME: process.env.ANDROID_HOME || `${process.env.HOME}/Library/Android/sdk`,
+  ...sentryEnv(),
 });
 
 /** Signing key names in `keytool -list -v` output (entries that hold a private key). */
