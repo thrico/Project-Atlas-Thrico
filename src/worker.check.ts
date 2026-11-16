@@ -1,4 +1,4 @@
-// Self-check for the parts that talk to thrico-logic: log batching and key files. No network, no build.
+// Self-check for the parts that talk to thrico-logic: log batching, key files and OTA jobs. No network, no build.
 //   npm run check
 import assert from "assert";
 import fs from "fs";
@@ -10,6 +10,9 @@ import { prepareBuild } from "./steps/config";
 import { keystoreAlias, privateKeyAliases } from "./steps/android";
 import { execFileSync } from "child_process";
 import { BuildBundle } from "./types";
+import { MobileBuildWorker } from "./worker";
+import { otaTimeLimit, otaWorkRoot } from "./ota";
+import { REPO } from "./steps/repository";
 
 (async () => {
   const calls: { url: string; body: any }[] = [];
@@ -100,6 +103,108 @@ import { BuildBundle } from "./types";
   assert.throws(() => keystoreAlias(ks, "pass123456"), /holds 2 keys \(my-upload, second\)/);
   assert.deepEqual(privateKeyAliases("Alias name: ca\nEntry type: trustedCertEntry\n\nAlias name: k\nEntry type: PrivateKeyEntry\n"), ["k"]);
 
+  // OTA jobs: routed by `type`, run with stub git/yarn/npx on PATH that log their args.
+  const bin = path.join(workDir, "bin");
+  const cmdLog = path.join(workDir, "commands.log");
+  fs.mkdirSync(bin);
+  const stub = (name: string, body: string) => fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${name} $*" >> "${cmdLog}"\n${body}\n`, { mode: 0o755 });
+  stub("git", `case "$1" in
+  clone) for a; do d=$a; done; mkdir -p "$d";;
+  merge-base) [ -n "$FAKE_NOT_ON_OTA" ] && exit 1;;
+  log) echo "Fix the feed";;
+esac
+exit 0`);
+  stub("yarn", "exit 0");
+  stub("npx", `echo "  env $NODE_OPTIONS $EXPO_TOKEN $EXPO_PUBLIC_API_URL $EXPO_PUBLIC_SENTRY_DSN" >> "${cmdLog}"
+case "$3" in
+  update) echo '[{"group":"0f1e2d3c-4b5a","runtimeVersion":"1.0.0","platform":"android","message":"Fix the feed"},{"group":"0f1e2d3c-4b5a","runtimeVersion":"1.0.0","platform":"ios","message":"Fix the feed"}]';;
+  channel:create) exit 1;;
+  update:republish) [ -n "$FAKE_REPUBLISH_FAIL" ] && exit 1;;
+esac
+exit 0`);
+  process.env.PATH = `${bin}:${process.env.PATH}`;
+  Object.assign(process.env, { EXPO_TOKEN: "expo-tok", APP_API_URL: "https://api.example/graphql", APP_SENTRY_DSN: "dsn" });
+  otaWorkRoot.dir = path.join(workDir, "ota");
+  logStatus = 200;
+  const commands = () => {
+    const lines = fs.existsSync(cmdLog) ? fs.readFileSync(cmdLog, "utf8").trim().split("\n") : [];
+    fs.rmSync(cmdLog, { force: true });
+    return lines.map((l) => l.replace(otaWorkRoot.dir, "<work>"));
+  };
+  const deleted: string[] = [];
+  const worker = new MobileBuildWorker() as any;
+  worker.sqs = { send: async (cmd: any) => deleted.push(cmd.input.ReceiptHandle) };
+  const deliver = (body: unknown, receipt: string, count = 1) =>
+    worker.handle({ Body: JSON.stringify(body), ReceiptHandle: receipt, Attributes: { ApproximateReceiveCount: String(count) } });
+  const sha = "abcdef0123456789abcdef0123456789abcdef01";
+  const events = () => calls.splice(0).filter((c) => c.url === "/worker/ota/events").map((c) => c.body);
+
+  calls.length = 0;
+  await deliver({ type: "ota-candidate", commit: sha }, "c1");
+  const npxUpdate = `npx -y eas-cli@27.2.0 update --branch ota-abcdef0 --message Fix the feed --platform all --non-interactive --json`;
+  assert.deepEqual(commands(), [
+    `git clone --filter=blob:none --no-checkout ${REPO} <work>/ota-${sha}`,
+    `git merge-base --is-ancestor ${sha} origin/ota`,
+    `git checkout --detach ${sha}`,
+    `git log -1 --pretty=%s`,
+    `yarn install --frozen-lockfile`,
+    npxUpdate,
+    `  env --max-old-space-size=8192 expo-tok https://api.example/graphql dsn`,
+  ]);
+  assert.deepEqual(events(), [
+    { event: "ota.candidate", groupId: "0f1e2d3c-4b5a", commit: sha, branch: "ota-abcdef0", message: "Fix the feed", runtimeVersion: "1.0.0", platforms: ["android", "ios"] },
+  ]);
+  assert.deepEqual(deleted.splice(0), ["c1"]);
+  assert.ok(!fs.existsSync(path.join(otaWorkRoot.dir, `ota-${sha}`)));
+
+  // Not on origin/ota: nothing published or registered, message still deleted.
+  process.env.FAKE_NOT_ON_OTA = "1";
+  await deliver({ type: "ota-candidate", commit: sha }, "c2");
+  delete process.env.FAKE_NOT_ON_OTA;
+  assert.ok(!commands().some((c) => c.startsWith("npx")));
+  assert.deepEqual(events(), []);
+  assert.deepEqual(deleted.splice(0), ["c2"]);
+
+  const send = { type: "ota-send", requestId: "r1", appId: "a1", groupId: "0f1e2d3c-4b5a", target: "app-com-brand-app", message: "Fix the feed" };
+  await deliver(send, "s1");
+  const eas = "npx -y eas-cli@27.2.0";
+  assert.deepEqual(commands().filter((c) => !c.startsWith("  env")), [
+    `git clone --depth 1 ${REPO} <work>/ota-send-r1`,
+    `${eas} branch:create app-com-brand-app --non-interactive`,
+    `${eas} channel:create app-com-brand-app --non-interactive`, // fails as "exists"; ignored
+    `${eas} channel:edit app-com-brand-app --branch app-com-brand-app --non-interactive`,
+    `${eas} update:republish --group 0f1e2d3c-4b5a --destination-branch app-com-brand-app --message Fix the feed --non-interactive --json`,
+  ]);
+  assert.deepEqual(events(), [{ event: "ota.sent", appId: "a1", requestId: "r1", status: "success" }]);
+  assert.deepEqual(deleted.splice(0), ["s1"]);
+
+  process.env.FAKE_REPUBLISH_FAIL = "1";
+  await deliver(send, "s2");
+  delete process.env.FAKE_REPUBLISH_FAIL;
+  commands();
+  assert.deepEqual(events(), [{ event: "ota.sent", appId: "a1", requestId: "r1", status: "failure", error: "[eas update:republish] Failed with exit code 1" }]);
+  assert.deepEqual(deleted.splice(0), ["s2"]);
+
+  // Bad input never reaches a command; too many deliveries give up with a failure event.
+  await deliver({ ...send, target: "app-x; rm -rf /" }, "s3");
+  await deliver(send, "s4", 4);
+  assert.deepEqual(commands(), []);
+  assert.deepEqual(events().map((e) => [e.status, e.error]), [
+    ["failure", "Invalid target app-x; rm -rf /"],
+    ["failure", "The build worker gave up after 3 attempts"],
+  ]);
+  await deliver({ type: "nope" }, "x1");
+  assert.deepEqual(deleted.splice(0), ["s3", "s4", "x1"]);
+
+  // Time limit kills the running command and fails the send.
+  otaTimeLimit.ms = 200;
+  stub("npx", "sleep 5");
+  await deliver(send, "s5");
+  const [timedOut] = events();
+  assert.equal(timedOut.status, "failure");
+  assert.match(timedOut.error, /Not started: Timed out after/);
+  assert.ok(!commands().some((c) => c.includes("republish")));
+  assert.deepEqual(deleted.splice(0), ["s5"]);
   fs.rmSync(workDir, { recursive: true, force: true });
   server.close();
   console.log("worker.check: ok");

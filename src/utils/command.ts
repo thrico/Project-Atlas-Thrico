@@ -9,7 +9,7 @@ export async function executeCommand(
   cwd: string,
   logPrefix: string,
   envOverride?: NodeJS.ProcessEnv,
-): Promise<void> {
+): Promise<string> {
   const { log = (line: string) => console.log(`[${logPrefix}]: ${line}`), signal } = commandContext;
   if (signal?.aborted) throw new Error(`[${logPrefix}] Not started: ${signal.reason?.message ?? "build aborted"}`);
 
@@ -19,6 +19,8 @@ export async function executeCommand(
     // grandchildren (xcodebuild under fastlane); move to process groups if those are seen lingering.
     const proc = spawn(command, args, { cwd, env, signal, killSignal: "SIGKILL" });
     log(`$ ${logPrefix}`);
+    let stdout = ""; // resolved for commands whose output is parsed (eas --json)
+    proc.stdout.on("data", (data) => (stdout += data));
 
     for (const stream of [proc.stdout, proc.stderr]) {
       let rest = "";
@@ -33,7 +35,7 @@ export async function executeCommand(
     }
 
     proc.on("close", (code) => {
-      if (code === 0) resolve();
+      if (code === 0) resolve(stdout);
       else reject(new Error(`[${logPrefix}] Failed with exit code ${code}`));
     });
 

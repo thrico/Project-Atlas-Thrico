@@ -6,6 +6,7 @@ import {
   SQSClient,
 } from "@aws-sdk/client-sqs";
 import { ApiError, workerCall } from "./api";
+import { OtaMessage, runOtaCandidate, runOtaSend } from "./ota";
 import { BuildPipeline, buildTimeLimitMs } from "./pipeline";
 import { BuildBundle, BuildMessage } from "./types";
 
@@ -64,16 +65,36 @@ export class MobileBuildWorker {
 
   private async handle(msg: Message) {
     const remove = () => this.sqs!.send(new DeleteMessageCommand({ QueueUrl: this.queueUrl, ReceiptHandle: msg.ReceiptHandle }));
-    let job: BuildMessage;
+    let job: BuildMessage | OtaMessage;
     try {
       job = JSON.parse(msg.Body || "");
-      if (!job?.buildId) throw new Error("no buildId");
+      if (!("type" in job) && !job?.buildId) throw new Error("no buildId");
+      if ("type" in job && job.type !== "ota-candidate" && job.type !== "ota-send") throw new Error(`unknown type ${(job as any).type}`);
     } catch (e: any) {
       console.error(`Dropping unreadable build message ${msg.MessageId}: ${e.message}`);
       return remove();
     }
 
     const deliveries = Number(msg.Attributes?.ApproximateReceiveCount || 1);
+    if ("type" in job) {
+      const ota = job;
+      if (deliveries > MAX_DELIVERIES) {
+        console.error(`OTA ${ota.type}: delivered ${deliveries} times, giving up`);
+        if (ota.type === "ota-send")
+          await workerCall("/worker/ota/events", {
+            event: "ota.sent", appId: ota.appId, requestId: ota.requestId, status: "failure",
+            error: `The build worker gave up after ${MAX_DELIVERIES} attempts`,
+          }).catch((e) => console.error(e.message));
+        return remove();
+      }
+      this.currentRun = (ota.type === "ota-candidate" ? runOtaCandidate(ota) : runOtaSend(ota)).catch((e) =>
+        console.error(`OTA ${ota.type} failed: ${e.message}`),
+      );
+      await this.currentRun;
+      this.currentRun = undefined;
+      return remove();
+    }
+
     if (deliveries > MAX_DELIVERIES) {
       console.error(`Build ${job.buildId}: delivered ${deliveries} times, giving up`);
       await workerCall(`/worker/builds/${job.buildId}/report`, {
