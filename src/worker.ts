@@ -7,11 +7,17 @@ import {
 } from "@aws-sdk/client-sqs";
 import { ApiError, workerCall } from "./api";
 import { OtaMessage, runOtaCandidate, runOtaSend } from "./ota";
-import { BuildPipeline, buildTimeLimitMs } from "./pipeline";
+import { BuildPipeline } from "./pipeline";
 import { BuildBundle, BuildMessage } from "./types";
 
 const MAX_DELIVERIES = 3; // never retry a build forever
 const RETRY_AFTER_SECONDS = 60; // when the bundle can't be fetched (API down)
+/**
+ * A taken job stays hidden only this long unless the heartbeat extends it, so a worker that dies
+ * (crash, kill, nodemon restart) releases it within minutes instead of the whole build time limit,
+ * which in a FIFO queue also held back every job behind it.
+ */
+export const visibility = { seconds: 5 * 60, heartbeatMs: 2 * 60_000 }; // shortened by the self-check
 
 /** Takes builds from the SQS build queue one at a time; a message is deleted only after the final report. */
 export class MobileBuildWorker {
@@ -40,8 +46,6 @@ export class MobileBuildWorker {
   }
 
   private async poll() {
-    // Keep the message hidden for the whole build, so nobody else takes it meanwhile (SQS max is 12 hours).
-    const visibility = Math.min(43_200, Math.ceil(buildTimeLimitMs() / 1000) + 15 * 60);
     while (!this.stopping.signal.aborted) {
       try {
         const { Messages } = await this.sqs!.send(
@@ -49,7 +53,7 @@ export class MobileBuildWorker {
             QueueUrl: this.queueUrl,
             MaxNumberOfMessages: 1,
             WaitTimeSeconds: 20,
-            VisibilityTimeout: visibility,
+            VisibilityTimeout: visibility.seconds,
             MessageSystemAttributeNames: ["ApproximateReceiveCount"],
           }),
           { abortSignal: this.stopping.signal },
@@ -63,7 +67,21 @@ export class MobileBuildWorker {
     }
   }
 
+  /** Runs one job while keeping its message hidden (heartbeat), so nobody else takes it meanwhile. */
   private async handle(msg: Message) {
+    const heartbeat = setInterval(() => {
+      this.sqs!.send(
+        new ChangeMessageVisibilityCommand({ QueueUrl: this.queueUrl, ReceiptHandle: msg.ReceiptHandle, VisibilityTimeout: visibility.seconds }),
+      ).catch((e) => console.error("Could not extend the job's queue hold:", e.message));
+    }, visibility.heartbeatMs);
+    try {
+      await this.process(msg);
+    } finally {
+      clearInterval(heartbeat);
+    }
+  }
+
+  private async process(msg: Message) {
     const remove = () => this.sqs!.send(new DeleteMessageCommand({ QueueUrl: this.queueUrl, ReceiptHandle: msg.ReceiptHandle }));
     let job: BuildMessage | OtaMessage;
     try {

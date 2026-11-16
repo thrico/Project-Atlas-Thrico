@@ -10,7 +10,7 @@ import { prepareBuild } from "./steps/config";
 import { keystoreAlias, privateKeyAliases } from "./steps/android";
 import { execFileSync } from "child_process";
 import { BuildBundle } from "./types";
-import { MobileBuildWorker } from "./worker";
+import { MobileBuildWorker, visibility } from "./worker";
 import { otaTimeLimit, otaWorkRoot } from "./ota";
 import { REPO } from "./steps/repository";
 
@@ -205,6 +205,24 @@ exit 0`);
   assert.match(timedOut.error, /Not started: Timed out after/);
   assert.ok(!commands().some((c) => c.includes("republish")));
   assert.deepEqual(deleted.splice(0), ["s5"]);
+
+  // Heartbeat: while a job runs its message's hold is renewed (short), and it stops once the job ends.
+  visibility.heartbeatMs = 50;
+  otaTimeLimit.ms = 10_000;
+  stub("npx", "sleep 0.4");
+  const sqsCalls: { name: string; input: any }[] = [];
+  worker.sqs = { send: async (cmd: any) => void sqsCalls.push({ name: cmd.constructor.name, input: cmd.input }) };
+  await deliver(send, "h1");
+  const holds = sqsCalls.filter((c) => c.name === "ChangeMessageVisibilityCommand");
+  assert.ok(holds.length >= 3, `heartbeat renewed the hold (${holds.length}x)`);
+  assert.ok(holds.every((c) => c.input.ReceiptHandle === "h1" && c.input.VisibilityTimeout === visibility.seconds));
+  assert.equal(sqsCalls.at(-1)!.name, "DeleteMessageCommand");
+  const after = sqsCalls.length;
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(sqsCalls.length, after, "no renewals after the job ended");
+  events();
+  commands();
+
   fs.rmSync(workDir, { recursive: true, force: true });
   server.close();
   console.log("worker.check: ok");
