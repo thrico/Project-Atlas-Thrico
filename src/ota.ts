@@ -93,6 +93,23 @@ export async function runOtaSend(job: Extract<OtaMessage, { type: "ota-send" }>)
     await inWorkDir(`ota-send-${requestId}`, async (dir) => {
       // Only app.json (the EAS project id) is needed.
       await retryNetwork("git clone", () => executeCommand("git", ["clone", "--depth", "1", REPO, dir], process.cwd(), "git clone"));
+      // Strip plugins and dynamic configs so EAS CLI doesn't try to resolve uninstalled node_modules.
+      const appJsonPath = path.join(dir, "app.json");
+      if (fs.existsSync(appJsonPath)) {
+        try {
+          const appJson = JSON.parse(fs.readFileSync(appJsonPath, "utf8"));
+          if (appJson.expo?.plugins) {
+            delete appJson.expo.plugins;
+            fs.writeFileSync(appJsonPath, JSON.stringify(appJson, null, 2));
+          }
+        } catch (e: any) {
+          console.warn(`Could not strip plugins from app.json: ${e.message}`);
+        }
+      }
+      for (const dyn of ["app.config.js", "app.config.ts", "app.config.mjs"]) {
+        const p = path.join(dir, dyn);
+        if (fs.existsSync(p)) fs.rmSync(p, { force: true });
+      }
       const eas = (args: string[], label: string) =>
         executeCommand("npx", [...EAS, ...args], dir, label, { EXPO_TOKEN: process.env.EXPO_TOKEN });
       // Both are created on the app's first send; afterwards they already exist.

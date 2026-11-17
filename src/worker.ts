@@ -33,7 +33,27 @@ export class MobileBuildWorker {
       if (!process.env[name]) throw new Error(`Missing ${name} in the build worker's environment`);
     }
     this.queueUrl = process.env.CUSTOM_APP_BUILD_QUEUE_URL!;
-    this.sqs = new SQSClient({ region: process.env.AWS_REGION || /sqs\.([a-z0-9-]+)\./.exec(this.queueUrl)?.[1] });
+    const region =
+      process.env.AWS_REGION ||
+      process.env.AWS_SQS_REGION ||
+      /sqs\.([a-z0-9-]+)\./.exec(this.queueUrl)?.[1];
+    const accessKeyId = process.env.AWS_ACCESS_KEY_ID || process.env.AWS_SQS_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || process.env.AWS_SQS_SECRET_ACCESS_KEY;
+    const sessionToken = process.env.AWS_SESSION_TOKEN || process.env.AWS_SQS_SESSION_TOKEN;
+
+    const credentials =
+      accessKeyId && secretAccessKey
+        ? {
+            accessKeyId,
+            secretAccessKey,
+            ...(sessionToken && !accessKeyId.startsWith("AKIA") ? { sessionToken } : {}),
+          }
+        : undefined;
+
+    this.sqs = new SQSClient({
+      region,
+      ...(credentials ? { credentials } : {}),
+    });
     this.loop = this.poll();
     console.log(`Listening for builds on ${this.queueUrl}`);
   }
