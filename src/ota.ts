@@ -11,7 +11,25 @@ export type OtaMessage =
   | { type: "ota-send"; requestId: string; appId: string; groupId: string; target: string; message?: string };
 
 const EAS = ["-y", "eas-cli@27.2.0"];
+// thrico-mobile's lockfile is Yarn 1; the Mac's global yarn may be Yarn 4, which refuses it.
+const YARN = ["-y", "yarn@1.22.22"];
+/** The dashboard offers the newest 20 `ota` commits; fetch a little more history than that. */
+const OTA_HISTORY = 50;
 export const otaTimeLimit = { ms: 40 * 60_000 }; // shortened by the self-check
+export const networkRetry = { attempts: 3, delayMs: 10_000 }; // shortened by the self-check
+
+/** GitHub over the Mac's connection can time out mid-download; try a network step again. */
+async function retryNetwork(label: string, step: () => Promise<unknown>) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await step();
+    } catch (e: any) {
+      if (attempt >= networkRetry.attempts || commandContext.signal?.aborted) throw e;
+      console.log(`${label} failed (${e.message}); retry ${attempt + 1}/${networkRetry.attempts}`);
+      await new Promise((r) => setTimeout(r, networkRetry.delayMs * attempt));
+    }
+  }
+}
 export const otaWorkRoot = { dir: path.join(process.cwd(), "builds") };
 
 /** Same contract as the GitHub Action: register the update group with thrico-logic. */
@@ -20,14 +38,18 @@ export async function runOtaCandidate(job: { commit: string }) {
   if (!/^[0-9a-f]{40}$/.test(commit ?? "")) throw new Error(`Invalid commit ${commit}`);
   const branch = `ota-${commit.slice(0, 7)}`;
   await inWorkDir(`ota-${commit}`, async (dir) => {
-    // Blob-less clone: full history (for the ancestor check) without downloading every file version.
-    await executeCommand("git", ["clone", "--filter=blob:none", "--no-checkout", REPO, dir], process.cwd(), "git clone");
+    // One shallow fetch of the ota branch: everything arrives in a single download (a blob-less clone
+    // fetched files lazily during checkout, which failed midway on slow connections).
+    await executeCommand("git", ["init", "-q", dir], process.cwd(), "git init");
+    await retryNetwork("git fetch", () =>
+      executeCommand("git", ["fetch", "--depth", String(OTA_HISTORY), "--no-tags", REPO, "+refs/heads/ota:refs/remotes/origin/ota"], dir, "git fetch ota"),
+    );
     await executeCommand("git", ["merge-base", "--is-ancestor", commit, "origin/ota"], dir, "check commit is on ota").catch(() => {
-      throw new Error(`${commit} is not on the ota branch`);
+      throw new Error(`${commit} is not among the newest ${OTA_HISTORY} commits of the ota branch`);
     });
     await executeCommand("git", ["checkout", "--detach", commit], dir, `git checkout ${commit}`);
     const subject = execFileSync("git", ["log", "-1", "--pretty=%s"], { cwd: dir, encoding: "utf8" }).trim();
-    await executeCommand("yarn", ["install", "--frozen-lockfile"], dir, "yarn install");
+    await retryNetwork("yarn install", () => executeCommand("npx", [...YARN, "install", "--frozen-lockfile"], dir, "yarn install"));
     const out = await executeCommand(
       "npx",
       [...EAS, "update", "--branch", branch, "--message", subject, "--platform", "all", "--non-interactive", "--json"],
@@ -68,7 +90,7 @@ export async function runOtaSend(job: Extract<OtaMessage, { type: "ota-send" }>)
     if (!/^[0-9a-fA-F-]{8,64}$/.test(groupId ?? "")) throw new Error(`Invalid group ${groupId}`);
     await inWorkDir(`ota-send-${requestId}`, async (dir) => {
       // Only app.json (the EAS project id) is needed.
-      await executeCommand("git", ["clone", "--depth", "1", REPO, dir], process.cwd(), "git clone");
+      await retryNetwork("git clone", () => executeCommand("git", ["clone", "--depth", "1", REPO, dir], process.cwd(), "git clone"));
       const eas = (args: string[], label: string) =>
         executeCommand("npx", [...EAS, ...args], dir, label, { EXPO_TOKEN: process.env.EXPO_TOKEN });
       // Both are created on the app's first send; afterwards they already exist.

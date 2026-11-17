@@ -11,7 +11,7 @@ import { keystoreAlias, privateKeyAliases } from "./steps/android";
 import { execFileSync } from "child_process";
 import { BuildBundle } from "./types";
 import { MobileBuildWorker, visibility } from "./worker";
-import { otaTimeLimit, otaWorkRoot } from "./ota";
+import { networkRetry, otaTimeLimit, otaWorkRoot } from "./ota";
 import { REPO } from "./steps/repository";
 
 (async () => {
@@ -109,7 +109,8 @@ import { REPO } from "./steps/repository";
   fs.mkdirSync(bin);
   const stub = (name: string, body: string) => fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${name} $*" >> "${cmdLog}"\n${body}\n`, { mode: 0o755 });
   stub("git", `case "$1" in
-  clone) for a; do d=$a; done; mkdir -p "$d";;
+  clone|init) for a; do d=$a; done; mkdir -p "$d";;
+  fetch) [ -f "${cmdLog}.fetchfail" ] && { rm "${cmdLog}.fetchfail"; echo "fatal: early EOF" >&2; exit 128; };;
   merge-base) [ -n "$FAKE_NOT_ON_OTA" ] && exit 1;;
   log) echo "Fix the feed";;
 esac
@@ -140,14 +141,19 @@ exit 0`);
   const events = () => calls.splice(0).filter((c) => c.url === "/worker/ota/events").map((c) => c.body);
 
   calls.length = 0;
+  networkRetry.delayMs = 10;
+  fs.writeFileSync(`${cmdLog}.fetchfail`, ""); // the first fetch times out, the retry works
   await deliver({ type: "ota-candidate", commit: sha }, "c1");
   const npxUpdate = `npx -y eas-cli@27.2.0 update --branch ota-abcdef0 --message Fix the feed --platform all --non-interactive --json`;
   assert.deepEqual(commands(), [
-    `git clone --filter=blob:none --no-checkout ${REPO} <work>/ota-${sha}`,
+    `git init -q <work>/ota-${sha}`,
+    `git fetch --depth 50 --no-tags ${REPO} +refs/heads/ota:refs/remotes/origin/ota`,
+    `git fetch --depth 50 --no-tags ${REPO} +refs/heads/ota:refs/remotes/origin/ota`, // first try timed out
     `git merge-base --is-ancestor ${sha} origin/ota`,
     `git checkout --detach ${sha}`,
     `git log -1 --pretty=%s`,
-    `yarn install --frozen-lockfile`,
+    `npx -y yarn@1.22.22 install --frozen-lockfile`,
+    `  env  expo-tok  `, // Yarn 1 pinned through npx, not the Mac's global yarn
     npxUpdate,
     `  env --max-old-space-size=8192 expo-tok https://api.example/graphql dsn`,
   ]);
