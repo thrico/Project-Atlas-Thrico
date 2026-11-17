@@ -3,6 +3,7 @@ import path from "path";
 import { execFileSync } from "child_process";
 import { workerCall } from "./api";
 import { REPO } from "./steps/repository";
+import { pinYarn1 } from "./steps/dependencies";
 import { commandContext, executeCommand } from "./utils/command";
 
 /** SQS bodies from thrico-logic for OTA jobs (message group "ota"); store builds have no `type`. */
@@ -49,6 +50,7 @@ export async function runOtaCandidate(job: { commit: string }) {
     });
     await executeCommand("git", ["checkout", "--detach", commit], dir, `git checkout ${commit}`);
     const subject = execFileSync("git", ["log", "-1", "--pretty=%s"], { cwd: dir, encoding: "utf8" }).trim();
+    pinYarn1(dir);
     await retryNetwork("yarn install", () => executeCommand("npx", [...YARN, "install", "--frozen-lockfile"], dir, "yarn install"));
     const out = await executeCommand(
       "npx",

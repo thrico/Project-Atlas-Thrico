@@ -113,6 +113,7 @@ import { REPO } from "./steps/repository";
   fetch) [ -f "${cmdLog}.fetchfail" ] && { rm "${cmdLog}.fetchfail"; echo "fatal: early EOF" >&2; exit 128; };;
   merge-base) [ -n "$FAKE_NOT_ON_OTA" ] && exit 1;;
   log) echo "Fix the feed";;
+  checkout) echo '{"name": "thrico"}' > package.json;;
 esac
 exit 0`);
   stub("yarn", "exit 0");
@@ -121,6 +122,7 @@ case "$3" in
   update) echo '[{"group":"0f1e2d3c-4b5a","runtimeVersion":"1.0.0","platform":"android","message":"Fix the feed"},{"group":"0f1e2d3c-4b5a","runtimeVersion":"1.0.0","platform":"ios","message":"Fix the feed"}]';;
   channel:create) exit 1;;
   update:republish) [ -n "$FAKE_REPUBLISH_FAIL" ] && exit 1;;
+  install) grep -o '"packageManager": "[^"]*"' package.json >> "${cmdLog}";;
 esac
 exit 0`);
   process.env.PATH = `${bin}:${process.env.PATH}`;
@@ -154,6 +156,7 @@ exit 0`);
     `git log -1 --pretty=%s`,
     `npx -y yarn@1.22.22 install --frozen-lockfile`,
     `  env  expo-tok  `, // Yarn 1 pinned through npx, not the Mac's global yarn
+    `"packageManager": "yarn@1.22.22"`, // and declared, so a parent folder's packageManager isn't used
     npxUpdate,
     `  env --max-old-space-size=8192 expo-tok https://api.example/graphql dsn`,
   ]);
