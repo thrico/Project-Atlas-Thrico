@@ -17,6 +17,8 @@ import { REPO } from "./steps/repository";
 (async () => {
   const calls: { url: string; body: any }[] = [];
   let logStatus = 200;
+  // Canned answers for GET /worker/ota/sends/<id> (where an OTA send publishes).
+  const sendDetails: Record<string, { status?: number; body: unknown }> = {};
   let flaky = 0; // /flaky answers 502 this many times, then 200
   const server = http.createServer((req, res) => {
     let raw = "";
@@ -24,6 +26,11 @@ import { REPO } from "./steps/repository";
     req.on("end", () => {
       assert.equal(req.headers.authorization, `Bearer ${process.env.BUILD_WORKER_TOKEN}`);
       calls.push({ url: req.url!, body: JSON.parse(raw || "{}") });
+      const canned = sendDetails[req.url!];
+      if (canned) {
+        res.statusCode = canned.status ?? 200;
+        return res.end(JSON.stringify(canned.body));
+      }
       res.statusCode = req.url!.endsWith("/logs") ? logStatus : req.url === "/flaky" && flaky-- > 0 ? 502 : req.url === "/bad" ? 400 : 200;
       res.end("{}");
     });
@@ -108,23 +115,29 @@ import { REPO } from "./steps/repository";
   const cmdLog = path.join(workDir, "commands.log");
   fs.mkdirSync(bin);
   const stub = (name: string, body: string) => fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${name} $*" >> "${cmdLog}"\n${body}\n`, { mode: 0o755 });
-  stub("git", `case "$1" in
-  clone|init) for a; do d=$a; done; mkdir -p "$d";;
+  const gitBody = `case "$1" in
+  clone) for a; do d=$a; done; mkdir -p "$d"; echo '{"expo": {"name": "Thrico"}}' > "$d/app.json";;
+  init) for a; do d=$a; done; mkdir -p "$d";;
   fetch) [ -f "${cmdLog}.fetchfail" ] && { rm "${cmdLog}.fetchfail"; echo "fatal: early EOF" >&2; exit 128; };;
   merge-base) [ -n "$FAKE_NOT_ON_OTA" ] && exit 1;;
   log) echo "Fix the feed";;
-  checkout) echo '{"name": "thrico"}' > package.json;;
+  checkout) echo '{"name": "thrico"}' > package.json; echo '{"expo": {"name": "Thrico", "owner": "thrico_1", "slug": "thrico-thriving-communities"}}' > app.json;;
 esac
-exit 0`);
+exit 0`;
+  stub("git", gitBody);
   stub("yarn", "exit 0");
-  stub("npx", `echo "  env $NODE_OPTIONS $EXPO_TOKEN $EXPO_PUBLIC_API_URL $EXPO_PUBLIC_SENTRY_DSN" >> "${cmdLog}"
+  const npxBody = `echo "  env $NODE_OPTIONS $EXPO_TOKEN $EXPO_PUBLIC_API_URL $EXPO_PUBLIC_SENTRY_DSN" >> "${cmdLog}"
 case "$3" in
   update) echo '[{"group":"0f1e2d3c-4b5a","runtimeVersion":"1.0.0","platform":"android","message":"Fix the feed"},{"group":"0f1e2d3c-4b5a","runtimeVersion":"1.0.0","platform":"ios","message":"Fix the feed"}]';;
   channel:create) exit 1;;
   update:republish) [ -n "$FAKE_REPUBLISH_FAIL" ] && exit 1;;
   install) grep -o '"packageManager": "[^"]*"' package.json >> "${cmdLog}";;
 esac
-exit 0`);
+case "$4" in
+  --channel|--group) [ -f app.json ] && node -e 'const e=require("./app.json").expo;console.log("  project", e.owner, e.slug, e.extra.eas.projectId, e.updates.url, "token="+process.env.EXPO_TOKEN)' >> "${cmdLog}";;
+esac
+exit 0`;
+  stub("npx", npxBody);
   process.env.PATH = `${bin}:${process.env.PATH}`;
   Object.assign(process.env, { EXPO_TOKEN: "expo-tok", APP_API_URL: "https://api.example/graphql", APP_SENTRY_DSN: "dsn" });
   otaWorkRoot.dir = path.join(workDir, "ota");
@@ -214,6 +227,34 @@ exit 0`);
   assert.match(timedOut.error, /Not started: Timed out after/);
   assert.ok(!commands().some((c) => c.includes("republish")));
   assert.deepEqual(deleted.splice(0), ["s5"]);
+
+  // Own Expo project (e.g. IBPC Dubai): send builds the commit into the app's project on its channel
+  // with the app's token, and reports the new group; rollback republishes there; 409 = skip silently.
+  otaTimeLimit.ms = 10_000;
+  stub("npx", npxBody);
+  stub("git", gitBody);
+  const ownProject = { mode: "own", commit: sha, projectId: "bc86f517-0000-4000-8000-000000000000", owner: "thrico_1", slug: "ipbc-dubai", channel: "production", expoToken: "own-tok" };
+  sendDetails["/worker/ota/sends/o1"] = { body: { ...ownProject, action: "send" } };
+  await deliver({ ...send, requestId: "o1", appId: "ibpc" }, "o1");
+  const ownCmds = commands();
+  assert.ok(ownCmds.includes(`npx -y yarn@1.22.22 install --frozen-lockfile`), "own send installs the commit");
+  assert.ok(ownCmds.includes(`npx -y eas-cli@27.2.0 update --channel production --message Fix the feed --platform all --non-interactive --json`));
+  assert.ok(ownCmds.includes(`  project thrico_1 ipbc-dubai bc86f517-0000-4000-8000-000000000000 https://u.expo.dev/bc86f517-0000-4000-8000-000000000000 token=own-tok`), "app.json points at the app's project; the app's token is used");
+  assert.ok(!ownCmds.some((c) => c.includes("republish") || c.includes("channel:create")), "nothing copied inside thrico-mobile's project");
+  assert.deepEqual(events(), [{ event: "ota.sent", appId: "ibpc", requestId: "o1", status: "success", groupId: "0f1e2d3c-4b5a" }]);
+
+  sendDetails["/worker/ota/sends/o2"] = { body: { ...ownProject, action: "rollback", groupId: "9e8d7c6b-1111" } };
+  await deliver({ ...send, requestId: "o2", appId: "ibpc" }, "o2");
+  const rbCmds = commands();
+  assert.ok(rbCmds.includes(`npx -y eas-cli@27.2.0 update:republish --group 9e8d7c6b-1111 --destination-channel production --message Fix the feed --non-interactive --json`));
+  assert.ok(rbCmds.some((c) => c.startsWith("  project thrico_1 ipbc-dubai") && c.endsWith("token=own-tok")));
+  assert.ok(!rbCmds.some((c) => c.includes("yarn")), "rollback needs no install");
+  assert.deepEqual(events(), [{ event: "ota.sent", appId: "ibpc", requestId: "o2", status: "success", groupId: "9e8d7c6b-1111" }]);
+
+  sendDetails["/worker/ota/sends/o3"] = { status: 409, body: { error: "This OTA send is not pending" } };
+  await deliver({ ...send, requestId: "o3", appId: "ibpc" }, "o3");
+  assert.deepEqual([commands(), events()], [[], []], "a send that is no longer pending does nothing");
+  deleted.splice(0);
 
   // Heartbeat: while a job runs its message's hold is renewed (short), and it stops once the job ends.
   visibility.heartbeatMs = 50;
