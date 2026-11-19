@@ -18,12 +18,13 @@ const setOtaChannel = (file: string, pattern: RegExp, channel: string) => {
 };
 
 export class BrandingEngine {
-  static async applyBranding(workingDir: string, payload: MobilePublishPayload) {
+  /** `native: false` (OTA sends) changes only what the JS bundle reads; native files are left alone. */
+  static async applyBranding(workingDir: string, payload: MobilePublishPayload, { native = true } = {}) {
     console.log(`Applying branding for ${payload.app.name}...`);
 
     // 1. Android - Update App Name in strings.xml
     const androidStringsPath = path.join(workingDir, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml');
-    if (fs.existsSync(androidStringsPath)) {
+    if (native && fs.existsSync(androidStringsPath)) {
       const xmlString = fs.readFileSync(androidStringsPath, 'utf8');
       const parser = new xml2js.Parser();
       const builder = new xml2js.Builder();
@@ -42,7 +43,7 @@ export class BrandingEngine {
 
     // 2. iOS - Update App Name and Version in Info.plist (Simulated via naive replacement for POC)
     const iosInfoPlistPath = path.join(workingDir, 'ios', 'Thrico', 'Info.plist');
-    if (fs.existsSync(iosInfoPlistPath)) {
+    if (native && fs.existsSync(iosInfoPlistPath)) {
       let plistContent = fs.readFileSync(iosInfoPlistPath, 'utf8');
 
       // Update App Name
@@ -77,7 +78,7 @@ export class BrandingEngine {
 
     // 4. Update iOS Bundle ID in project.pbxproj
     const pbxprojPath = path.join(workingDir, 'ios', 'Thrico.xcodeproj', 'project.pbxproj');
-    if (fs.existsSync(pbxprojPath)) {
+    if (native && fs.existsSync(pbxprojPath)) {
       let pbxprojContent = fs.readFileSync(pbxprojPath, 'utf8');
       const bundleIdRegex = /PRODUCT_BUNDLE_IDENTIFIER\s*=\s*[^;]+;/g;
       pbxprojContent = pbxprojContent.replace(bundleIdRegex, `PRODUCT_BUNDLE_IDENTIFIER = ${payload.ios.bundleId};`);
@@ -90,7 +91,7 @@ export class BrandingEngine {
 
     // 5. Update Android applicationId, versionCode, and versionName in app/build.gradle
     const androidBuildGradlePath = path.join(workingDir, 'android', 'app', 'build.gradle');
-    if (fs.existsSync(androidBuildGradlePath)) {
+    if (native && fs.existsSync(androidBuildGradlePath)) {
       let gradleContent = fs.readFileSync(androidBuildGradlePath, 'utf8');
 
       const appIdRegex = /applicationId\s+["'][^"']+["']/g;
@@ -111,7 +112,7 @@ export class BrandingEngine {
 
     // 6. Patch google-services.json to prevent build failures due to package name mismatch
     const googleServicesPath = path.join(workingDir, 'android', 'app', 'google-services.json');
-    if (fs.existsSync(googleServicesPath)) {
+    if (native && fs.existsSync(googleServicesPath)) {
       try {
         const gsContent = fs.readFileSync(googleServicesPath, 'utf8');
         const gsJson = JSON.parse(gsContent);
@@ -175,6 +176,7 @@ export class BrandingEngine {
 
     // 9. OTA channel: each app follows its own EAS channel/branch, so an update reaches it only when
     //    an admin sends it from the dashboard. Must match otaTarget() in @thrico/database.
+    if (!native) return;
     const target = otaTarget(payload.android?.packageName || payload.ios?.bundleId);
     const manifestPath = path.join(workingDir, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
     const expoPlistPath = path.join(workingDir, 'ios', 'Thrico', 'Supporting', 'Expo.plist');

@@ -13,17 +13,24 @@ import { BuildBundle } from "./types";
 import { MobileBuildWorker, visibility } from "./worker";
 import { networkRetry, otaTimeLimit, otaWorkRoot } from "./ota";
 import { REPO } from "./steps/repository";
+import sharp from "sharp";
 
 (async () => {
   const calls: { url: string; body: any }[] = [];
   let logStatus = 200;
   // Canned answers for GET /worker/ota/sends/<id> (where an OTA send publishes).
   const sendDetails: Record<string, { status?: number; body: unknown }> = {};
+  const cdnHits: string[] = []; // the app's logo comes from the CDN, stubbed here
+  const logoPng = await sharp({ create: { width: 4, height: 4, channels: 3, background: "#f00" } }).webp().toBuffer();
   let flaky = 0; // /flaky answers 502 this many times, then 200
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
+      if (req.url!.startsWith("/cdn/")) {
+        cdnHits.push(req.url!);
+        return res.end(logoPng);
+      }
       assert.equal(req.headers.authorization, `Bearer ${process.env.BUILD_WORKER_TOKEN}`);
       calls.push({ url: req.url!, body: JSON.parse(raw || "{}") });
       const canned = sendDetails[req.url!];
@@ -126,6 +133,14 @@ esac
 exit 0`;
   stub("git", gitBody);
   stub("yarn", "exit 0");
+  // node: the brand's theme/font scripts are only logged; `node -e` and scripts in bin/ run for real.
+  fs.writeFileSync(path.join(bin, "node"), `#!/bin/sh\ncase "$1" in -e|${bin}/*) exec "${process.execPath}" "$@";; esac\necho "node $*" >> "${cmdLog}"\n`, { mode: 0o755 });
+  // What eas update would bundle: branding.json, the in-app logo (now a real PNG) and .env.
+  fs.writeFileSync(path.join(bin, "brandcheck.js"), `const fs = require("fs");
+const b = JSON.parse(fs.readFileSync("src/theme/branding.json", "utf8"));
+const png = fs.readFileSync("assets/images/logo.png").subarray(1, 4).toString();
+const pkg = /EXPO_PUBLIC_PACKAGE="([^"]*)"/.exec(fs.readFileSync(".env", "utf8"))[1];
+console.log("  branded", b.primaryColor, b.font, b.logo, "logo=" + png, "package=" + pkg, "keys=" + fs.existsSync(".build-keys"));`);
   const npxBody = `echo "  env $NODE_OPTIONS $EXPO_TOKEN $EXPO_PUBLIC_API_URL $EXPO_PUBLIC_SENTRY_DSN" >> "${cmdLog}"
 case "$3" in
   update) echo '[{"group":"0f1e2d3c-4b5a","runtimeVersion":"1.0.0","platform":"android","message":"Fix the feed"},{"group":"0f1e2d3c-4b5a","runtimeVersion":"1.0.0","platform":"ios","message":"Fix the feed"}]';;
@@ -133,13 +148,15 @@ case "$3" in
   update:republish) [ -n "$FAKE_REPUBLISH_FAIL" ] && exit 1;;
   install) grep -o '"packageManager": "[^"]*"' package.json >> "${cmdLog}";;
 esac
+project() { node -e 'const e=require("./app.json").expo;console.log("  project", e.owner, e.slug, e.extra.eas.projectId, e.updates.url, "token="+process.env.EXPO_TOKEN)' >> "${cmdLog}"; }
 case "$4" in
-  --channel|--group) [ -f app.json ] && node -e 'const e=require("./app.json").expo;console.log("  project", e.owner, e.slug, e.extra.eas.projectId, e.updates.url, "token="+process.env.EXPO_TOKEN)' >> "${cmdLog}";;
+  --channel) project; node "${bin}/brandcheck.js" >> "${cmdLog}";;
+  --group) project;;
 esac
 exit 0`;
   stub("npx", npxBody);
   process.env.PATH = `${bin}:${process.env.PATH}`;
-  Object.assign(process.env, { EXPO_TOKEN: "expo-tok", APP_API_URL: "https://api.example/graphql", APP_SENTRY_DSN: "dsn" });
+  Object.assign(process.env, { EXPO_TOKEN: "expo-tok", APP_API_URL: "https://api.example/graphql", APP_SENTRY_DSN: "dsn", APP_WS_URL: "wss://api.example", APP_GOOGLE_MAPS_API_KEY: "maps" });
   otaWorkRoot.dir = path.join(workDir, "ota");
   logStatus = 200;
   const commands = () => {
@@ -187,74 +204,79 @@ exit 0`;
   assert.deepEqual(events(), []);
   assert.deepEqual(deleted.splice(0), ["c2"]);
 
-  const send = { type: "ota-send", requestId: "r1", appId: "a1", groupId: "0f1e2d3c-4b5a", target: "app-com-brand-app", message: "Fix the feed" };
-  await deliver(send, "s1");
+  // OTA send: always into the app's own Expo project, with the app's token, branded for the app.
   const eas = "npx -y eas-cli@27.2.0";
-  assert.deepEqual(commands().filter((c) => !c.startsWith("  env")), [
-    `git clone --depth 1 ${REPO} <work>/ota-send-r1`,
-    `${eas} branch:create app-com-brand-app --non-interactive`,
-    `${eas} channel:create app-com-brand-app --non-interactive`, // fails as "exists"; ignored
-    `${eas} channel:edit app-com-brand-app --branch app-com-brand-app --non-interactive`,
-    `${eas} update:republish --group 0f1e2d3c-4b5a --destination-branch app-com-brand-app --message Fix the feed --non-interactive --json`,
+  const send = { type: "ota-send", requestId: "o1", appId: "ibpc", groupId: "0f1e2d3c-4b5a", target: "app-com-ibpc-dubai", message: "Fix the feed" };
+  const app = {
+    entityId: "e1", appName: "IBPC Dubai", androidPackageName: "com.ibpc.dubai", iosBundleId: "com.ibpc.dubai",
+    branding: { appIcon: "brand/icon.png", logo: "brand/logo.png", primaryColor: "#112233", secondaryColor: "#445566", font: "@expo-google-fonts/inter" },
+    android: {}, ios: {}, eas: {}, cdnUrl: `${process.env.THRICO_API_URL}cdn/`,
+  };
+  const ownProject = { mode: "own", commit: sha, projectId: "bc86f517-0000-4000-8000-000000000000", owner: "thrico_1", slug: "ipbc-dubai", channel: "production", expoToken: "own-tok", app };
+  const details = (id: string, body: unknown, status?: number) => (sendDetails[`/worker/ota/sends/${id}`] = { status, body });
+
+  details("o1", { ...ownProject, action: "send" });
+  await deliver(send, "o1");
+  const ownCmds = commands().filter((c) => !c.startsWith("  env"));
+  assert.deepEqual(ownCmds.slice(ownCmds.indexOf("npx -y yarn@1.22.22 install --frozen-lockfile")), [
+    "npx -y yarn@1.22.22 install --frozen-lockfile",
+    `"packageManager": "yarn@1.22.22"`,
+    "npx yarn add @expo-google-fonts/inter", // the brand's font, then its theme, as a store build does
+    "node scripts/ci-set-font.js @expo-google-fonts/inter",
+    "node scripts/ci-set-theme.js #112233 #445566",
+    `${eas} update --channel production --message Fix the feed --platform all --non-interactive --json`,
+    "  project thrico_1 ipbc-dubai bc86f517-0000-4000-8000-000000000000 https://u.expo.dev/bc86f517-0000-4000-8000-000000000000 token=own-tok",
+    `  branded #112233 @expo-google-fonts/inter ${app.cdnUrl}brand/logo.png logo=PNG package=com.ibpc.dubai keys=false`,
   ]);
-  assert.deepEqual(events(), [{ event: "ota.sent", appId: "a1", requestId: "r1", status: "success" }]);
-  assert.deepEqual(deleted.splice(0), ["s1"]);
+  assert.deepEqual(cdnHits.splice(0), ["/cdn/brand/icon.png"]);
+  assert.ok(!ownCmds.some((c) => c.includes("republish") || c.includes("channel:create") || c.includes("branch:create")), "nothing copied or created in thrico-mobile's project");
+  assert.deepEqual(events(), [{ event: "ota.sent", appId: "ibpc", requestId: "o1", status: "success", groupId: "0f1e2d3c-4b5a" }]);
+
+  details("o2", { ...ownProject, action: "rollback", groupId: "9e8d7c6b-1111" });
+  await deliver({ ...send, requestId: "o2" }, "o2");
+  const rbCmds = commands();
+  assert.ok(rbCmds.includes(`${eas} update:republish --group 9e8d7c6b-1111 --destination-channel production --message Fix the feed --non-interactive --json`));
+  assert.ok(rbCmds.some((c) => c.startsWith("  project thrico_1 ipbc-dubai") && c.endsWith("token=own-tok")));
+  assert.ok(!rbCmds.some((c) => c.includes("yarn") || c.includes("branded")), "rollback needs no install or branding");
+  assert.deepEqual(events(), [{ event: "ota.sent", appId: "ibpc", requestId: "o2", status: "success", groupId: "9e8d7c6b-1111" }]);
 
   process.env.FAKE_REPUBLISH_FAIL = "1";
-  await deliver(send, "s2");
+  await deliver({ ...send, requestId: "o2" }, "o2b");
   delete process.env.FAKE_REPUBLISH_FAIL;
   commands();
-  assert.deepEqual(events(), [{ event: "ota.sent", appId: "a1", requestId: "r1", status: "failure", error: "[eas update:republish] Failed with exit code 1" }]);
-  assert.deepEqual(deleted.splice(0), ["s2"]);
+  assert.deepEqual(events(), [{ event: "ota.sent", appId: "ibpc", requestId: "o2", status: "failure", error: "[eas update:republish] Failed with exit code 1" }]);
 
+  details("o3", { error: "This OTA send is not pending" }, 409);
+  await deliver({ ...send, requestId: "o3" }, "o3");
+  assert.deepEqual([commands(), events()], [[], []], "a send that is no longer pending does nothing");
+
+  // An old backend (shared mode, or no app branding) never gets a plain Thrico bundle sent.
+  details("n1", { mode: "shared" });
+  details("n2", { ...ownProject, action: "send", app: undefined });
+  await deliver({ ...send, requestId: "n1" }, "n1");
+  await deliver({ ...send, requestId: "n2" }, "n2");
   // Bad input never reaches a command; too many deliveries give up with a failure event.
-  await deliver({ ...send, target: "app-x; rm -rf /" }, "s3");
+  await deliver({ ...send, requestId: "x; rm -rf /" }, "s3");
   await deliver(send, "s4", 4);
   assert.deepEqual(commands(), []);
   assert.deepEqual(events().map((e) => [e.status, e.error]), [
-    ["failure", "Invalid target app-x; rm -rf /"],
+    ["failure", "The backend is out of date; update thrico-logic"],
+    ["failure", "The backend is out of date; update thrico-logic"],
+    ["failure", "Invalid request x; rm -rf /"],
     ["failure", "The build worker gave up after 3 attempts"],
   ]);
   await deliver({ type: "nope" }, "x1");
-  assert.deepEqual(deleted.splice(0), ["s3", "s4", "x1"]);
+  assert.deepEqual(deleted.splice(0), ["o1", "o2", "o2b", "o3", "n1", "n2", "s3", "s4", "x1"]);
 
   // Time limit kills the running command and fails the send.
   otaTimeLimit.ms = 200;
   stub("npx", "sleep 5");
-  await deliver(send, "s5");
+  await deliver({ ...send, requestId: "o2" }, "s5");
   const [timedOut] = events();
   assert.equal(timedOut.status, "failure");
-  assert.match(timedOut.error, /Not started: Timed out after/);
-  assert.ok(!commands().some((c) => c.includes("republish")));
+  assert.match(timedOut.error, /Timed out after/);
+  commands();
   assert.deepEqual(deleted.splice(0), ["s5"]);
-
-  // Own Expo project (e.g. IBPC Dubai): send builds the commit into the app's project on its channel
-  // with the app's token, and reports the new group; rollback republishes there; 409 = skip silently.
-  otaTimeLimit.ms = 10_000;
-  stub("npx", npxBody);
-  stub("git", gitBody);
-  const ownProject = { mode: "own", commit: sha, projectId: "bc86f517-0000-4000-8000-000000000000", owner: "thrico_1", slug: "ipbc-dubai", channel: "production", expoToken: "own-tok" };
-  sendDetails["/worker/ota/sends/o1"] = { body: { ...ownProject, action: "send" } };
-  await deliver({ ...send, requestId: "o1", appId: "ibpc" }, "o1");
-  const ownCmds = commands();
-  assert.ok(ownCmds.includes(`npx -y yarn@1.22.22 install --frozen-lockfile`), "own send installs the commit");
-  assert.ok(ownCmds.includes(`npx -y eas-cli@27.2.0 update --channel production --message Fix the feed --platform all --non-interactive --json`));
-  assert.ok(ownCmds.includes(`  project thrico_1 ipbc-dubai bc86f517-0000-4000-8000-000000000000 https://u.expo.dev/bc86f517-0000-4000-8000-000000000000 token=own-tok`), "app.json points at the app's project; the app's token is used");
-  assert.ok(!ownCmds.some((c) => c.includes("republish") || c.includes("channel:create")), "nothing copied inside thrico-mobile's project");
-  assert.deepEqual(events(), [{ event: "ota.sent", appId: "ibpc", requestId: "o1", status: "success", groupId: "0f1e2d3c-4b5a" }]);
-
-  sendDetails["/worker/ota/sends/o2"] = { body: { ...ownProject, action: "rollback", groupId: "9e8d7c6b-1111" } };
-  await deliver({ ...send, requestId: "o2", appId: "ibpc" }, "o2");
-  const rbCmds = commands();
-  assert.ok(rbCmds.includes(`npx -y eas-cli@27.2.0 update:republish --group 9e8d7c6b-1111 --destination-channel production --message Fix the feed --non-interactive --json`));
-  assert.ok(rbCmds.some((c) => c.startsWith("  project thrico_1 ipbc-dubai") && c.endsWith("token=own-tok")));
-  assert.ok(!rbCmds.some((c) => c.includes("yarn")), "rollback needs no install");
-  assert.deepEqual(events(), [{ event: "ota.sent", appId: "ibpc", requestId: "o2", status: "success", groupId: "9e8d7c6b-1111" }]);
-
-  sendDetails["/worker/ota/sends/o3"] = { status: 409, body: { error: "This OTA send is not pending" } };
-  await deliver({ ...send, requestId: "o3", appId: "ibpc" }, "o3");
-  assert.deepEqual([commands(), events()], [[], []], "a send that is no longer pending does nothing");
-  deleted.splice(0);
 
   // Heartbeat: while a job runs its message's hold is renewed (short), and it stops once the job ends.
   visibility.heartbeatMs = 50;
@@ -262,7 +284,7 @@ exit 0`;
   stub("npx", "sleep 0.4");
   const sqsCalls: { name: string; input: any }[] = [];
   worker.sqs = { send: async (cmd: any) => void sqsCalls.push({ name: cmd.constructor.name, input: cmd.input }) };
-  await deliver(send, "h1");
+  await deliver({ ...send, requestId: "o2" }, "h1");
   const holds = sqsCalls.filter((c) => c.name === "ChangeMessageVisibilityCommand");
   assert.ok(holds.length >= 3, `heartbeat renewed the hold (${holds.length}x)`);
   assert.ok(holds.every((c) => c.input.ReceiptHandle === "h1" && c.input.VisibilityTimeout === visibility.seconds));

@@ -26,9 +26,10 @@ export async function downloadAssets(
 export async function applyBranding(
   workDir: string,
   payload: MobilePublishPayload,
+  options?: { native?: boolean },
 ): Promise<void> {
   console.log("Step 7: Apply Branding");
-  await BrandingEngine.applyBranding(workDir, payload);
+  await BrandingEngine.applyBranding(workDir, payload, options);
 }
 
 export async function generateAssets(

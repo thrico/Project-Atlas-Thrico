@@ -4,6 +4,10 @@ import { execFileSync } from "child_process";
 import { ApiError, workerCall } from "./api";
 import { REPO } from "./steps/repository";
 import { pinYarn1 } from "./steps/dependencies";
+import { keysDir, prepareBuild } from "./steps/config";
+import { applyBranding, downloadAssets } from "./steps/assets";
+import { applyDynamicWhitelabeling } from "./steps/whitelabel";
+import { BuildBundle } from "./types";
 import { commandContext, executeCommand } from "./utils/command";
 
 /** SQS bodies from thrico-logic for OTA jobs (message group "ota"); store builds have no `type`. */
@@ -54,27 +58,27 @@ export async function runOtaCandidate(job: { commit: string }) {
   });
 }
 
-/** Republishes an update group onto the app's own branch; always reports ota.sent, failure included. */
+/** Publishes the branded bundle (or rolls back) in the app's own Expo project; always reports ota.sent, failure included. */
 export async function runOtaSend(job: Extract<OtaMessage, { type: "ota-send" }>) {
-  const { requestId, appId, groupId, target, message = "OTA send" } = job;
+  const { requestId, appId, message = "OTA send" } = job;
   let error: string | undefined;
   let published: string | undefined;
   try {
     if (!/^[0-9a-zA-Z-]{1,64}$/.test(requestId ?? "")) throw new Error(`Invalid request ${requestId}`);
-    // Where to publish: an app built in its own Expo project gets the update there, with its own token.
-    let details: OwnProject | { mode?: "shared" };
+    let details: OwnProject;
     try {
       details = await workerCall(`/worker/ota/sends/${requestId}`);
     } catch (e: any) {
       if (e instanceof ApiError && e.status === 409) return console.log(`OTA send ${requestId}: no longer pending; skipping`);
       throw e;
     }
-    if (details.mode === "own") published = await sendIntoOwnProject(requestId, details as OwnProject, message);
-    else await sendInSharedProject(requestId, target, groupId, message);
+    // Only an app in its own Expo project, with its branding, can get its own bundle.
+    if (details?.mode !== "own" || !details.app) throw new Error("The backend is out of date; update thrico-logic");
+    published = await sendIntoOwnProject(requestId, appId, details, message);
   } catch (e: any) {
     error = e?.message ?? String(e);
   }
-  console.log(`OTA send ${requestId}: ${error ? `failed: ${error}` : `sent${published ? ` (group ${published})` : ""}`}`);
+  console.log(`OTA send ${requestId}: ${error ? `failed: ${error}` : `sent (group ${published})`}`);
   await workerCall("/worker/ota/events", {
     event: "ota.sent",
     appId,
@@ -82,24 +86,6 @@ export async function runOtaSend(job: Extract<OtaMessage, { type: "ota-send" }>)
     status: error ? "failure" : "success",
     ...(error ? { error } : {}),
     ...(published ? { groupId: published } : {}),
-  });
-}
-
-/** Apps built in thrico-mobile's project: copy the prepared update onto the app's own branch there. */
-async function sendInSharedProject(requestId: string, target: string, groupId: string, message: string) {
-  if (!/^app-[a-z0-9-]+$/.test(target ?? "")) throw new Error(`Invalid target ${target}`);
-  if (!/^[0-9a-fA-F-]{8,64}$/.test(groupId ?? "")) throw new Error(`Invalid group ${groupId}`);
-  await inWorkDir(`ota-send-${requestId}`, async (dir) => {
-      // Only app.json (the EAS project id) is needed.
-      await retryNetwork("git clone", () => executeCommand("git", ["clone", "--depth", "1", REPO, dir], process.cwd(), "git clone"));
-      stripConfigPlugins(dir);
-      const eas = (args: string[], label: string) =>
-        executeCommand("npx", [...EAS, ...args], dir, label, { EXPO_TOKEN: process.env.EXPO_TOKEN });
-      // Both are created on the app's first send; afterwards they already exist.
-      await eas(["branch:create", target, "--non-interactive"], "eas branch:create").catch(() => console.log(`branch ${target} exists`));
-      await eas(["channel:create", target, "--non-interactive"], "eas channel:create").catch(() => console.log(`channel ${target} exists`));
-      await eas(["channel:edit", target, "--branch", target, "--non-interactive"], "eas channel:edit");
-      await eas(["update:republish", "--group", groupId, "--destination-branch", target, "--message", message, "--non-interactive", "--json"], "eas update:republish");
   });
 }
 
@@ -113,13 +99,15 @@ type OwnProject = {
   channel: string;
   expoToken: string;
   groupId?: string;
+  /** Same as a store build's bundle.app, without keys. */
+  app: Omit<BuildBundle["app"], "id">;
 };
 
 /**
- * Send: build the commit into the app's own Expo project on its channel. Rollback: put the earlier
- * group back on that channel. Both with the app's token. Returns the group now live for the app.
+ * Send: build the commit, branded for the app, into the app's own Expo project on its channel.
+ * Rollback: put the earlier group back on that channel. Both with the app's token. Returns the group now live.
  */
-async function sendIntoOwnProject(requestId: string, d: OwnProject, message: string): Promise<string> {
+async function sendIntoOwnProject(requestId: string, appId: string, d: OwnProject, message: string): Promise<string> {
   if (!/^[0-9a-f-]{36}$/i.test(d.projectId ?? "")) throw new Error(`Invalid Expo project ${d.projectId}`);
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(d.channel ?? "") || !/^[A-Za-z0-9_.-]{1,100}$/.test(d.slug ?? "") || !/^[A-Za-z0-9_.-]{1,100}$/.test(d.owner ?? "")) {
     throw new Error("Invalid Expo owner, slug or channel");
@@ -143,6 +131,8 @@ async function sendIntoOwnProject(requestId: string, d: OwnProject, message: str
       return;
     }
     await checkoutAndInstall(dir, d.commit);
+    const versionName = JSON.parse(fs.readFileSync(path.join(dir, "app.json"), "utf8")).expo?.version ?? "1.0.0";
+    await brandForApp(dir, { ...d.app, id: appId }, versionName);
     pointAtProject(dir, d);
     const out = await executeCommand(
       "npx",
@@ -154,6 +144,16 @@ async function sendIntoOwnProject(requestId: string, d: OwnProject, message: str
     live = parseUpdate(out).groupId;
   });
   return live;
+}
+
+/** The store build's JS-side branding steps, in pipeline order: theme, font, in-app logo, branding.json, .env. */
+async function brandForApp(dir: string, app: BuildBundle["app"], versionName: string) {
+  const payload = prepareBuild(dir, { build: { id: "ota", platform: "android", gitRef: "ota", versionName, buildNumber: 0 }, app, secrets: {} });
+  fs.rmSync(keysDir(dir), { recursive: true, force: true }); // no keys on a send; drop the empty folder
+  await downloadAssets(dir, payload);
+  await applyBranding(dir, payload, { native: false }); // native files aren't in an OTA bundle
+  // generateAssets is skipped: it only makes native icons.
+  await applyDynamicWhitelabeling(dir, payload);
 }
 
 /** Shallow fetch of the ota branch, check the commit is on it, check it out, install with Yarn 1. */
