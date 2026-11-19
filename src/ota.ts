@@ -170,8 +170,13 @@ async function checkoutAndInstall(dir: string, commit: string): Promise<string> 
   });
   await executeCommand("git", ["checkout", "--detach", commit], dir, `git checkout ${commit}`);
   const subject = execFileSync("git", ["log", "-1", "--pretty=%s"], { cwd: dir, encoding: "utf8" }).trim();
+  // macOS creates AppleDouble (._) sidecar files on non-HFS+ volumes (exFAT SSDs).
+  // They break patch-package (._*.patch) and Metro (.__layout.tsx etc). Remove them all.
+  cleanAppleDoubleFiles(dir);
   pinYarn1(dir);
   await retryNetwork("yarn install", () => executeCommand("npx", [...YARN, "install", "--frozen-lockfile"], dir, "yarn install"));
+  // yarn install may recreate ._ files in node_modules; clean again for Metro.
+  cleanAppleDoubleFiles(dir);
   return subject;
 }
 
@@ -246,5 +251,18 @@ async function inWorkDir(name: string, fn: (dir: string) => Promise<void>) {
     clearTimeout(timer);
     commandContext.signal = undefined;
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Recursively remove macOS AppleDouble `._*` sidecar files that macOS creates on
+ * non-HFS+ volumes (e.g. exFAT SSDs). These break Metro (binary `.__layout.tsx`),
+ * patch-package (`._react-native+…`), and other tools that glob for source files.
+ */
+function cleanAppleDoubleFiles(dir: string) {
+  try {
+    execFileSync("find", [dir, "-name", "._*", "-type", "f", "-delete"], { stdio: "ignore" });
+  } catch {
+    // Best-effort: some files may already have been removed or be on broken symlinks.
   }
 }

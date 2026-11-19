@@ -14,7 +14,7 @@ export async function executeCommand(
   if (signal?.aborted) throw new Error(`[${logPrefix}] Not started: ${signal.reason?.message ?? "build aborted"}`);
 
   return new Promise((resolve, reject) => {
-    const env = envOverride ? { ...process.env, ...envOverride } : process.env;
+    const env = { ...process.env, COPYFILE_DISABLE: "1", ...envOverride };
     // Args are not logged: some carry passwords. shortcut: SIGKILL reaches only the direct child, not
     // grandchildren (xcodebuild under fastlane); move to process groups if those are seen lingering.
     const proc = spawn(command, args, { cwd, env, signal, killSignal: "SIGKILL" });
